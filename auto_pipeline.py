@@ -245,20 +245,41 @@ def download_video(item: dict, target: Path, progress=None) -> None:
         if tmp.exists():tmp.unlink(missing_ok=True)
 
 def convert_for_capcut(src: Path, dst: Path) -> None:
-    # CapCut gets a native edit-ready H264 MP4 with muted media and vertical framing.
+    """Normalize footage using the verified packaged FFmpeg, with actionable errors."""
+    import sys
+    # The Windows installer places a standalone FFmpeg beside the application.
+    bundled = Path(sys.executable).resolve().parent / 'ffmpeg.exe'
+    exe = str(bundled) if getattr(sys, 'frozen', False) and bundled.is_file() else (
+        shutil.which('ffmpeg') or 'ffmpeg')
     filt='scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p'
-    cmd=['ffmpeg','-hide_banner','-loglevel','error','-y','-i',str(src),
+    cmd=[exe,'-hide_banner','-loglevel','error','-y','-i',str(src),
          '-map','0:v:0','-t','18','-vf',filt,'-an',
          '-c:v','libx264','-crf','22','-preset','veryfast',
          '-movflags','+faststart',str(dst)]
     try:
-        r=subprocess.run(cmd,capture_output=True,text=True,encoding='utf-8',errors='replace',timeout=180)
-    except (OSError,subprocess.TimeoutExpired) as exc:
-        raise RuntimeError('Не найден FFmpeg или конвертация зависла. Установи FFmpeg и проверь PATH.') from exc
-    if r.returncode!=0:
-        raise RuntimeError('FFmpeg не смог подготовить футаж: '+r.stderr[-600:])
-    if media_info(dst,'video')['duration']<4_500_000:
+        result=subprocess.run(cmd,capture_output=True,text=True,encoding='utf-8',
+                              errors='replace',timeout=240,
+                              creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f'FFmpeg не найден: {exe}. Переустанови последнюю версию приложения.') from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError('FFmpeg превысил время обработки видео (240 секунд).') from exc
+    except OSError as exc:
+        raise RuntimeError(f'FFmpeg не удалось запустить ({exe}): {exc}') from exc
+    if result.returncode != 0:
+        stderr = result.stderr.strip()[-1800:] or '(FFmpeg не выдал текст ошибки)'
+        code = f'{result.returncode} / 0x{result.returncode & 0xffffffff:08X}'
+        raise RuntimeError(
+            f'FFmpeg не смог подготовить футаж {src.name}.\\n'
+            f'Код завершения: {code}\\n'
+            f'Исполняемый файл: {exe}\\n'
+            f'{stderr}')
+    if not dst.is_file() or dst.stat().st_size < 10_000:
+        raise RuntimeError('FFmpeg не создал корректный MP4 после обработки.')
+    if media_info(dst,'video')['duration'] < 4_500_000:
         raise RuntimeError('Скачанный ролик слишком короткий — нужен другой футаж.')
+
 
 def to_srt(rows: list[tuple[int,int,str]], target: Path) -> None:
     def stamp(micro: int) -> str:

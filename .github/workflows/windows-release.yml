@@ -54,7 +54,18 @@ jobs:
             --hidden-import=playwright.sync_api `
             app.py
           $destination = 'dist/CapCutAutoEditor'
-          Copy-Item (Get-Command ffmpeg.exe).Source "$destination/ffmpeg.exe"
+          # imageio-ffmpeg provides a self-contained Windows FFmpeg build.
+          # The Chocolatey executable can depend on side-by-side DLLs that are
+          # not copied into the installer, causing silent conversion failures.
+          $standalone = python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"
+          if (!(Test-Path $standalone)) { throw 'Standalone FFmpeg binary not found' }
+          Copy-Item $standalone "$destination/ffmpeg.exe"
+          & "$destination/ffmpeg.exe" -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw 'Standalone FFmpeg does not launch' }
+          $encoders = & "$destination/ffmpeg.exe" -hide_banner -encoders
+          if ($LASTEXITCODE -ne 0 -or -not ($encoders -match 'libx264')) {
+            throw 'Bundled FFmpeg does not support H.264 encoding (libx264)'
+          }
           Copy-Item (Get-Command ffprobe.exe).Source "$destination/ffprobe.exe"
           $browser = Join-Path $env:LOCALAPPDATA 'ms-playwright'
           if (!(Test-Path $browser)) { throw 'Chromium not installed' }
@@ -68,6 +79,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Unable to create test MP3' }
           & '.\\dist\\CapCutAutoEditor\\CapCutAutoEditor.exe' --self-test-media $audio
           if ($LASTEXITCODE -ne 0) { throw "Installed EXE failed to read MP3 (exit $LASTEXITCODE)" }
+      - name: Smoke test VIDEO CONVERSION inside packaged EXE
+        shell: pwsh
+        run: |
+          $sample = Join-Path $env:RUNNER_TEMP 'проверка_футажа.mp4'
+          & (Get-Command ffmpeg.exe).Source -hide_banner -loglevel error -y -f lavfi -i 'testsrc2=size=640x360:rate=25:duration=7' -c:v mpeg4 -q:v 5 $sample
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to create test source video' }
+          & '.\\dist\\CapCutAutoEditor\\CapCutAutoEditor.exe' --self-test-video $sample
+          if ($LASTEXITCODE -ne 0) { throw "Packaged EXE failed video conversion (exit $LASTEXITCODE)" }
       - name: Package Windows installer
         shell: pwsh
         run: |
