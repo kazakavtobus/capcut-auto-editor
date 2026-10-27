@@ -1008,6 +1008,18 @@ def main():
         if browser.is_dir():os.environ['PLAYWRIGHT_BROWSERS_PATH']=str(browser)
     # Durable crash log, including Qt's hidden Windows launch without console.
     install_crash_logger()
+    # This also runs inside the packaged EXE during the Windows build.
+    # It catches packaging/codec problems before users download an installer.
+    if len(sys.argv) == 3 and sys.argv[1] == '--self-test-media':
+        try:
+            from builder import media_info
+            details = media_info(Path(sys.argv[2]), 'audio')
+            if details['duration'] <= 0:
+                raise ValueError('Empty audio duration')
+            return 0
+        except Exception as exc:
+            report_exception(exc, 'Packaged media smoke test')
+            return 71
     # Give this Python-based app its own Windows taskbar identity and icon.
     if sys.platform == 'win32':
         try:

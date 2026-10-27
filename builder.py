@@ -33,24 +33,63 @@ def new_id() -> str:
     return str(uuid.uuid4()).upper()
 
 def media_info(file: Path, media: str) -> dict:
+    """Read audio/video metadata in-process first, avoiding FFprobe DLL issues in EXE."""
+    file = Path(file)
     if not file.is_file():
         raise ValueError(f'Файл не найден: {file}')
+    pyav_error = None
     try:
-        proc = subprocess.run([
-            'ffprobe', '-v', 'error', '-show_entries',
-            'format=duration:stream=codec_type,width,height', '-of', 'json', str(file)
-        ], text=True, encoding='utf-8', errors='replace', capture_output=True, check=True)
-        info = json.loads(proc.stdout)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
-        raise RuntimeError('Не удалось прочитать медиа через ffprobe. Установи FFmpeg и перезапусти программу.\n' + str(exc)) from exc
-    dur = float(info.get('format', {}).get('duration', 0))
-    if dur <= 0:
+        import av
+        with av.open(str(file), mode='r') as container:
+            stream = next((s for s in container.streams if s.type == media), None)
+            if stream is None:
+                raise ValueError(f'В файле {file.name} нет дорожки типа {media}')
+            duration = float(container.duration or 0) / 1_000_000
+            if duration <= 0 and stream.duration is not None and stream.time_base is not None:
+                duration = float(stream.duration * stream.time_base)
+            if duration > 0:
+                return {
+                    'duration': int(duration * MICRO),
+                    'width': int(getattr(stream, 'width', 0) or 0),
+                    'height': int(getattr(stream, 'height', 0) or 0),
+                }
+            pyav_error = 'PyAV: не удалось определить длительность файла'
+    except Exception as exc:
+        pyav_error = f'PyAV: {type(exc).__name__}: {exc}'
+
+    # Fallback is useful for unusual media containers, but never hide its stderr.
+    import sys
+    bundled_probe = Path(sys.executable).resolve().parent / 'ffprobe.exe'
+    probe = str(bundled_probe) if getattr(sys, 'frozen', False) and bundled_probe.is_file() else (
+        shutil.which('ffprobe') or 'ffprobe')
+    cmd = [probe, '-v', 'error', '-show_entries',
+           'format=duration:stream=codec_type,width,height', '-of', 'json', str(file)]
+    try:
+        result = subprocess.run(cmd, text=True, encoding='utf-8', errors='replace',
+                                capture_output=True, timeout=40,
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f'Не удалось прочитать медиа. {pyav_error}\\nFFprobe: {exc}') from exc
+    if result.returncode:
+        details = result.stderr.strip()[-1200:] or '(FFprobe не вернул сообщение об ошибке)'
+        raise RuntimeError(
+            f'Не удалось прочитать {file.name}. {pyav_error}\\n'
+            f'FFprobe завершился с кодом {result.returncode}: {details}')
+    try:
+        info = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f'FFprobe вернул некорректный JSON. {pyav_error}\\n'
+                           f'{result.stdout[-300:]}') from exc
+    duration = float(info.get('format', {}).get('duration', 0) or 0)
+    if duration <= 0:
         raise ValueError(f'Нулевая длительность: {file.name}')
     streams = [s for s in info.get('streams', []) if s.get('codec_type') == media]
     if not streams:
         raise ValueError(f'В файле {file.name} нет дорожки типа {media}')
-    return {'duration': int(dur * MICRO), 'width': int(streams[0].get('width', 0)),
-            'height': int(streams[0].get('height', 0))}
+    return {'duration': int(duration * MICRO),
+            'width': int(streams[0].get('width', 0) or 0),
+            'height': int(streams[0].get('height', 0) or 0)}
+
 
 def parse_srt(file: Path) -> list[tuple[int,int,str]]:
     raw = file.read_text(encoding='utf-8-sig').replace('\r\n', '\n').strip()
