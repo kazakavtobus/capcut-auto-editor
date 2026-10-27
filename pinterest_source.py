@@ -7,8 +7,6 @@ Media is not assumed to have a reuse licence. Always review rights before upload
 from __future__ import annotations
 
 import hashlib
-import os
-import sys
 import random
 import re
 import shutil
@@ -23,12 +21,6 @@ BROWSER_PROFILE = CONFIG_DIR / 'pinterest_browser_profile'
 
 
 def _playwright():
-    # The packaged EXE bundles Chromium beside the executable. Playwright must
-    # be pointed at that bundled browser; otherwise it searches a user cache.
-    if getattr(sys, 'frozen', False):
-        bundled = Path(sys.executable).resolve().parent / 'ms-playwright'
-        if bundled.is_dir():
-            os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(bundled)
     try:
         from playwright.sync_api import sync_playwright
         return sync_playwright
