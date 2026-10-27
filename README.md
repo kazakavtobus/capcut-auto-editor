@@ -1,17 +1,15 @@
 # CapCut Auto Editor
 
-Автоматический монтаж музыкальных роликов с редактируемым проектом CapCut.
+Windows app (PySide6) that generates **editable CapCut drafts** from a song.
 
-## Возможности
+- Automatic beat-matched video sequencing, experimental Pinterest source, transitions, effects and captions.
+- Subtitles can be edited and saved to a persistent song library; verified edits are reused for repeat songs.
+- Windows EXE/installer built by [GitHub Actions](.github/workflows/windows-release.yml).
+- In-app update checks use GitHub Releases and SHA-256 verification.
 
-- Подбор атмосферного видеоряда с защитой от повторов на семь дней.
-- Три видео в единой тематике, нарезка под ритм и оформление по локальному шаблону.
-- Распознавание субтитров, редактирование слов и таймингов.
-- Библиотека песен с сохранением ручных исправлений.
-- Windows-приложение на PySide6; подготовка сборки EXE через GitHub Actions.
+**Setup:** read [README_RU.md](README_RU.md) (Russian), then import your own CapCut template locally.
+No CapCut templates, music, private media, credentials, browser profiles or model weights are stored in this repository.
 
-Подробности: [Инструкция на русском](README_RU.md).
+**Build status:** the Windows installer requires a successful GitHub Actions run; Python unit tests alone do not validate runtime behavior on Windows.
 
-> В репозитории нет музыки, приватных шаблонов CapCut, профиля Pinterest, ключей или пользовательских данных. Для работы нужен собственный локальный шаблон.
-
-**Статус:** исходный код V7.5; Windows EXE будет доступен после успешной сборки, пока не проверен на реальном компьютере.
+Pinterest automation is experimental and cannot bypass access controls. Obtain permission for footage before redistribution. This app is not affiliated with CapCut or Pinterest.

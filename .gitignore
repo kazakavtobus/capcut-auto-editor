@@ -1,0 +1,34 @@
+# Do not commit personally identifiable drafts, private assets, media, or tokens.
+template_original.zip
+*.mp3
+*.m4a
+*.wav
+*.mp4
+*.webm
+*.mov
+*.srt
+*.json.bak
+.env
+settings.json
+video_history.json
+pinterest_browser_profile/
+AutoAssets/
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+*.log
+
+# Persistent user-only state and generated archives
+song_library/
+corrected_captions/
+search_cache/
+updates/
+logs/
+*.zip
+*.json
+!*.json.example
+ms-playwright/
+*.download

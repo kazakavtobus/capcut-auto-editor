@@ -1,0 +1,87 @@
+name: Windows EXE + Installer release
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - name: Validate release tag and version
+        shell: pwsh
+        run: |
+          $version = python -c "from version import VERSION; print(VERSION)"
+          if ($env:GITHUB_REF -like 'refs/tags/v*' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match version.py v$version"
+          }
+      - name: Install runtime and packaging requirements
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+          choco install ffmpeg --yes --no-progress
+          choco install innosetup --yes --no-progress
+          python -m playwright install chromium
+          python -c "import PySide6.QtMultimedia; import librosa; import faster_whisper; print('runtime imports OK')"
+      - name: Run unit tests
+        run: python -m unittest test_v73 test_semantic test_regression test_editor test_song_library -v
+      - name: Build PyInstaller app (no private templates or personal files)
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onedir --windowed `
+            --name CapCutAutoEditor `
+            --icon assets/app_icon.ico `
+            --add-data "assets;assets" `
+            --collect-all faster_whisper `
+            --collect-all ctranslate2 `
+            --collect-all av `
+            --collect-all librosa `
+            --collect-all scipy `
+            --collect-all playwright `
+            --hidden-import=PySide6.QtMultimedia `
+            --collect-all sklearn `
+            --hidden-import=playwright.sync_api `
+            app.py
+          $destination = 'dist/CapCutAutoEditor'
+          Copy-Item (Get-Command ffmpeg.exe).Source "$destination/ffmpeg.exe"
+          Copy-Item (Get-Command ffprobe.exe).Source "$destination/ffprobe.exe"
+          $browser = Join-Path $env:LOCALAPPDATA 'ms-playwright'
+          if (!(Test-Path $browser)) { throw 'Chromium not installed' }
+          Copy-Item $browser "$destination/ms-playwright" -Recurse
+          if (!(Test-Path "$destination/CapCutAutoEditor.exe")) { throw 'App EXE missing' }
+      - name: Package Windows installer
+        shell: pwsh
+        run: |
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' 'installer\capcut.iss'
+          $installer = 'dist\release\CapCutAutoEditor_Setup.exe'
+          if (!(Test-Path $installer)) { throw 'Installer missing' }
+          $checksum = (Get-FileHash -Path $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$checksum  CapCutAutoEditor_Setup.exe" | Set-Content 'dist\release\CapCutAutoEditor_Setup.exe.sha256' -Encoding ascii
+      - name: Upload workflow test artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CapCutAutoEditor-Windows-Setup
+          path: |
+            dist/release/CapCutAutoEditor_Setup.exe
+            dist/release/CapCutAutoEditor_Setup.exe.sha256
+      - name: Publish GitHub Release for tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            'dist/release/CapCutAutoEditor_Setup.exe' `
+            'dist/release/CapCutAutoEditor_Setup.exe.sha256' `
+            --generate-notes --title "CapCut Auto Editor ${{ github.ref_name }}"
