@@ -583,6 +583,235 @@ class SubtitleDialog(QDialog):
         self.open_project(self.project)
 
 
+class ManualSongDialog(QDialog):
+    """An audio-synchronized human editor for the local verified-song library."""
+    def __init__(self,parent,audio=None):
+        super().__init__(parent)
+        self.setWindowTitle('Добавить песню вручную')
+        self.resize(990,785)
+        self.setMinimumSize(850,680)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground,True)
+        self.library=SongLibrary()
+        self.song=None
+        self.duration_us=0
+        self.player=QMediaPlayer(self) if QMediaPlayer else None
+        if self.player:
+            self.output=QAudioOutput(self)
+            self.output.setVolume(.6)
+            self.player.setAudioOutput(self.output)
+            self.player.positionChanged.connect(self.show_position)
+        shellpad=vertical(self,0,(9,9,9,9))
+        shell=QFrame();shell.setObjectName('windowShell');shellpad.addWidget(shell)
+        base=vertical(shell,0,(0,0,0,0))
+        base.addWidget(TitleBar(self,'Добавление песни · без Whisper'))
+        page=QWidget();page.setObjectName('page');base.addWidget(page,1)
+        layout=vertical(page,12,(24,20,24,20))
+        h=horizontal(space=10)
+        h.addWidget(label('Новая песня в библиотеке','heading'));h.addStretch()
+        h.addWidget(btn('Выбрать MP3','secondary',self.choose))
+        layout.addLayout(h)
+        self.filename=label('Нужно выбрать аудиофайл. Он остаётся на компьютере.','muted',True)
+        layout.addWidget(self.filename)
+        layout.addWidget(label('Вставь текст: одна строка — один субтитр. Или загрузи готовый SRT.','muted',True))
+        self.lyrics=QTextEdit();self.lyrics.setFixedHeight(95)
+        self.lyrics.setPlaceholderText('Первая фраза\nВторая фраза\nТретья фраза')
+        layout.addWidget(self.lyrics)
+        h=horizontal(space=8)
+        h.addWidget(btn('Разметить примерно','secondary',self.distribute))
+        h.addWidget(btn('Импортировать SRT','secondary',self.from_srt))
+        h.addStretch();layout.addLayout(h)
+        self.hint=label('Начальные таймкоды ПРИБЛИЗИТЕЛЬНЫЕ. Обязательно проверь их по звуку.','muted',True)
+        layout.addWidget(self.hint)
+        self.table=QTableWidget(0,3)
+        self.table.setHorizontalHeaderLabels(['НАЧАЛО, СЕК','КОНЕЦ, СЕК','ФРАЗА'])
+        self.table.setColumnWidth(0,125);self.table.setColumnWidth(1,125)
+        self.table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        layout.addWidget(self.table,1)
+        actions=horizontal(space=8)
+        actions.addWidget(btn('＋ Фраза','secondary',self.add_row))
+        actions.addWidget(btn('− Удалить','secondary',self.delete_row))
+        actions.addWidget(btn('Начало = курсор','secondary',lambda:self.mark(0)))
+        actions.addWidget(btn('Конец = курсор','secondary',lambda:self.mark(1)))
+        actions.addStretch();layout.addLayout(actions)
+        self.wave=WaveformTimeline(self);layout.addWidget(self.wave)
+        self.wave.seekRequested.connect(self.seek)
+        self.wave.subtitleSelected.connect(self.table.selectRow)
+        self.wave.subtitleEdited.connect(self.wave_changed)
+        h=horizontal(space=8)
+        self.play_button=btn('▶ Слушать','secondary',self.play_pause)
+        self.play_button.setEnabled(self.player is not None)
+        h.addWidget(self.play_button)
+        self.time_label=label('00:00 / 00:00','muted');h.addWidget(self.time_label)
+        h.addStretch()
+        h.addWidget(btn('✓ Сохранить в библиотеку','primary',self.save))
+        layout.addLayout(h)
+        self.table.itemChanged.connect(self.redraw)
+        self.table.itemSelectionChanged.connect(self.redraw)
+        if audio and Path(audio).is_file():self.load_song(Path(audio))
+
+    def choose(self):
+        chosen,_=QFileDialog.getOpenFileName(self,'Выбери песню','',
+            'Аудио (*.mp3 *.wav *.m4a *.flac *.ogg);;Все файлы (*)')
+        if chosen:self.load_song(Path(chosen))
+
+    def load_song(self,path):
+        try:
+            from builder import media_info
+            duration=int(media_info(path,'audio')['duration'])
+            if duration<=0 or duration>180_000_000:
+                raise ValueError('Поддерживаются песни длительностью до 3 минут.')
+            existing=self.library.load(path)
+        except Exception as exc:
+            QMessageBox.warning(self,'Не удалось открыть песню',str(exc));return
+        self.song=Path(path)
+        self.duration_us=duration
+        self.filename.setText(f'{path.name} · {duration/1_000_000:.1f} сек')
+        try:self.wave.set_audio(waveform_peaks(path),duration/1_000_000)
+        except Exception:self.wave.set_audio([.02]*300,duration/1_000_000)
+        if self.player:
+            self.player.stop()
+            self.player.setSource(QUrl.fromLocalFile(str(path)))
+        if existing and existing.get('rows'):
+            self.set_rows(existing['rows'])
+            self.lyrics.setPlainText('\n'.join(t for _,_,t in existing['rows']))
+            self.hint.setText('Найдены сохранённые фразы. Исправь текст или время, затем сохрани.')
+        else:
+            self.set_rows([]);self.lyrics.clear()
+        self.time_label.setText(f'0.0 / {duration/1_000_000:.1f} сек')
+
+    def set_rows(self,rows):
+        self.table.blockSignals(True)
+        try:
+            self.table.setRowCount(len(rows))
+            for i,(start,end,words) in enumerate(rows):
+                for col,value in enumerate((f'{start/1_000_000:.3f}',f'{end/1_000_000:.3f}',words)):
+                    self.table.setItem(i,col,QTableWidgetItem(value))
+        finally:self.table.blockSignals(False)
+        if rows:self.table.selectRow(0)
+        self.redraw()
+
+    def distribute(self):
+        if not self.song:
+            QMessageBox.warning(self,'Нет песни','Сначала выбери MP3.');return
+        from manual_lyrics import text_to_draft_rows
+        try:rows=text_to_draft_rows(self.lyrics.toPlainText(),self.duration_us)
+        except ValueError as exc:
+            QMessageBox.warning(self,'Ошибка текста',str(exc));return
+        if self.table.rowCount() and QMessageBox.question(self,'Сбросить таймкоды?',
+            'Текущие интервалы будут заменены приблизительной разметкой. Продолжить?')!=QMessageBox.Yes:return
+        self.set_rows(rows)
+        self.hint.setText('ВНИМАНИЕ: время распределено примерно, а не по вокалу. Подстрой границы на волне.')
+
+    def from_srt(self):
+        if not self.song:
+            QMessageBox.warning(self,'Нет песни','Сначала выбери MP3.');return
+        path,_=QFileDialog.getOpenFileName(self,'Выбери готовые субтитры','','SRT (*.srt)')
+        if not path:return
+        from manual_lyrics import import_srt_rows
+        try:rows=import_srt_rows(Path(path),self.duration_us)
+        except (ValueError,OSError) as exc:
+            QMessageBox.warning(self,'Некорректный SRT',str(exc));return
+        self.set_rows(rows)
+        self.lyrics.setPlainText('\n'.join(t for _,_,t in rows))
+        self.hint.setText('SRT импортирован с таймкодами. Проверь их по звуку.')
+
+    def current_rows(self):
+        result=[]
+        for i in range(self.table.rowCount()):
+            try:
+                start=float(self.table.item(i,0).text().replace(',','.'))
+                end=float(self.table.item(i,1).text().replace(',','.'))
+                words=self.table.item(i,2).text()
+                if end>start>=0:result.append({'start':start,'end':end,'text':words})
+            except (ValueError,AttributeError):continue
+        return result
+
+    def redraw(self):
+        self.wave.set_captions(self.current_rows())
+        self.wave.set_selected(self.table.currentRow())
+
+    def wave_changed(self,i,a,b):
+        if i<0 or i>=self.table.rowCount():return
+        self.table.blockSignals(True)
+        try:
+            self.table.item(i,0).setText(f'{a:.3f}')
+            self.table.item(i,1).setText(f'{b:.3f}')
+        finally:self.table.blockSignals(False)
+        self.redraw()
+
+    def seek(self,seconds):
+        if self.player:self.player.setPosition(round(seconds*1000))
+        self.wave.set_position(seconds)
+
+    def show_position(self,millis):
+        sec=millis/1000
+        self.wave.set_position(sec)
+        self.time_label.setText(f'{sec:.1f} / {self.duration_us/1_000_000:.1f} сек')
+
+    def play_pause(self):
+        if not self.player or not self.song:return
+        if self.player.playbackState()==QMediaPlayer.PlayingState:
+            self.player.pause();self.play_button.setText('▶ Слушать')
+        else:self.player.play();self.play_button.setText('Ⅱ Пауза')
+
+    def mark(self,col):
+        i=self.table.currentRow()
+        if i<0 or not self.player:
+            QMessageBox.information(self,'Не выбрана строка','Выбери строку субтитров.');return
+        self.table.item(i,col).setText(f'{self.player.position()/1000:.3f}')
+
+    def add_row(self):
+        if not self.song:return
+        current=self.current_rows()
+        start=current[-1]['end'] if current else 0
+        duration=self.duration_us/1_000_000
+        if duration-start<.2:
+            QMessageBox.information(self,'Нет места','Сократи предыдущие фразы.');return
+        i=self.table.rowCount();self.table.insertRow(i)
+        for col,text in enumerate((f'{start:.3f}',f'{min(duration,start+1):.3f}','Новая фраза')):
+            self.table.setItem(i,col,QTableWidgetItem(text))
+        self.table.selectRow(i);self.redraw()
+
+    def delete_row(self):
+        i=self.table.currentRow()
+        if i<0:return
+        self.table.removeRow(i)
+        if self.table.rowCount():self.table.selectRow(min(i,self.table.rowCount()-1))
+        self.redraw()
+
+    def save(self):
+        if not self.song:
+            QMessageBox.warning(self,'Нет песни','Выбери MP3.');return
+        from manual_lyrics import validate_manual_rows
+        try:
+            values=[]
+            for i in range(self.table.rowCount()):
+                a=round(float(self.table.item(i,0).text().replace(',','.'))*1_000_000)
+                b=round(float(self.table.item(i,1).text().replace(',','.'))*1_000_000)
+                values.append((a,b,self.table.item(i,2).text()))
+            rows=validate_manual_rows(values,self.duration_us)
+        except (ValueError,AttributeError,OverflowError) as exc:
+            QMessageBox.warning(self,'Проверь субтитры',str(exc));return
+        if QMessageBox.question(self,'Сохранить проверенную версию?',
+            'Ты проверил слова и тайминги? Они будут использоваться во всех следующих '
+            'роликах с этой MP3 БЕЗ Whisper. Сохранить?')!=QMessageBox.Yes:return
+        try:self.library.save(self.song,rows,verified=True,
+                              source='manual-library',display_name=self.song.name)
+        except Exception as exc:
+            QMessageBox.critical(self,'Не удалось сохранить',str(exc));return
+        QMessageBox.information(self,'Сохранено',f'{len(rows)} фраз в библиотеке. '
+            'Создавай новый проект с этой песней — Whisper будет пропущен.')
+        self.accept()
+
+    def closeEvent(self,event):
+        if self.player:self.player.stop()
+        super().closeEvent(event)
+
+
 class SongLibraryDialog(QDialog):
     def __init__(self,parent):
         super().__init__(parent)
@@ -600,6 +829,7 @@ class SongLibraryDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         layout.addWidget(self.table,1)
         row=horizontal(space=10)
+        row.addWidget(btn('＋ Добавить песню','primary',self.add_song))
         row.addWidget(btn('↻ Обновить','secondary',self.refresh))
         row.addWidget(btn('↗ Открыть папку библиотеки','secondary',self.open_folder))
         row.addStretch()
@@ -607,6 +837,10 @@ class SongLibraryDialog(QDialog):
         layout.addLayout(row)
         self.entries=[]
         self.refresh()
+
+    def add_song(self):
+        editor=ManualSongDialog(self)
+        if editor.exec()==QDialog.Accepted:self.refresh()
 
     def refresh(self):
         self.entries=[]
@@ -975,6 +1209,12 @@ class MainWindow(QMainWindow):
         self.header.status.setText('●  Ожидает')
         self.note('ОШИБКА: '+msg)
         QMessageBox.critical(self,'Не удалось создать проект',msg)
+        if any(s in msg for s in ('Whisper распознал слишком мало',
+                                  'Whisper не смог', 'Не удалось надёжно распознать')):
+            if QMessageBox.question(self,'Ручной ввод текста?',
+                    'Whisper не смог распознать эту песню. Открыть редактор библиотеки '
+                    'и вручную сохранить слова с таймкодами?')==QMessageBox.Yes:
+                ManualSongDialog(self,self.audio).exec()
 
     def open_project_folder(self):
         if self.last_project and self.last_project.is_dir():
