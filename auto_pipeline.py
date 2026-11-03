@@ -20,6 +20,7 @@ from builder import build, detect_beats, media_info, MICRO
 from caption_engine import obtain_captions
 from semantic_captions import clean_caption
 from video_history import VideoHistory, fingerprint
+from song_library import sync_previous_capcut_edits
 
 BASE = Path(__file__).resolve().parent
 CONFIG_DIR = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'CapCutAutoEditor'
@@ -310,6 +311,12 @@ def run_auto(audio_path: str, projects_folder: str, provider: str,
     if aud['duration']>180*MICRO:
         raise ValueError('Поддерживаются песни до 3 минут.')
     beats=beats_override if beats_override is not None else detect_beats(audio)
+    # Before each repeat song, look for newly saved edits in older CapCut drafts.
+    if captions_override is None:
+        try:
+            sync_previous_capcut_edits(audio, target_folder, progress=status)
+        except (OSError, ValueError, KeyError) as exc:
+            status('Не удалось прочитать прошлые правки CapCut: '+str(exc)[:180])
     status('Подготовка субтитров...')
     captions=captions_override if captions_override is not None else obtain_captions(
         audio, aud['duration'], whisper_model, progress=status,

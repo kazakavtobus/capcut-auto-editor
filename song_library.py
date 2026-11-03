@@ -126,3 +126,98 @@ def import_project_corrections(project: Path, library: SongLibrary | None = None
     path = (library or SongLibrary()).save(project_song(project), rows,
                                           verified=True, source='capcut-import', display_name=project.name)
     return len(rows), path
+
+
+# A CapCut project keeps the ORIGINAL, automatically produced subtitles in
+# AutoAssets/lyrics.srt, while user's edits live in its draft_content.json.
+# Never consider an untouched auto transcript to be a verified correction.
+def _caption_rows_differ(left, right, tolerance_us: int = 80_000) -> bool:
+    if len(left) != len(right):
+        return True
+    for (a, b, text), (c, d, other) in zip(left, right):
+        if clean_caption(text) != clean_caption(other):
+            return True
+        if abs(a - c) > tolerance_us or abs(b - d) > tolerance_us:
+            return True
+    return False
+
+
+def _project_timeline(project: Path, baseline):
+    """Find the most recently saved DIFFERENT text timeline. Read-only."""
+    from subtitle_editor import _project_data
+    root = Path(project)
+    candidates = [root / 'draft_content.json']
+    candidates.extend((root / 'Timelines').glob('*/draft_content.json'))
+    candidates = [p for p in candidates if p.is_file()]
+    for candidate in sorted(candidates, key=lambda p: p.stat().st_mtime_ns, reverse=True):
+        try:
+            rows, _ = _project_data(candidate.parent)
+            valid = _valid_rows(rows)
+            if not _caption_rows_differ(valid, baseline):
+                continue
+            return valid, candidate.stat().st_mtime
+        except (ValueError, KeyError, OSError, TypeError, json.JSONDecodeError):
+            continue
+    return None
+
+
+def sync_previous_capcut_edits(audio: Path, projects_folder: Path,
+                               *, library: SongLibrary | None = None, progress=None):
+    """Import newer corrections from saved CapCut projects of the EXACT same audio.
+
+    An unchanged project's original subtitles are never imported as human work.
+    No existing CapCut project is modified.
+    """
+    from builder import parse_srt
+    say = progress or (lambda _message: None)
+    audio = Path(audio)
+    folder = Path(projects_folder)
+    library = library or SongLibrary()
+    if not folder.is_dir() or not audio.is_file():
+        return None
+    existing = library.load(audio)
+    saved_timestamp = 0.0
+    if existing and existing.get('verified'):
+        try:
+            saved_timestamp = datetime.fromisoformat(existing['edited_utc']).timestamp()
+        except (KeyError, TypeError, ValueError):
+            pass
+    fingerprint = song_hash(audio)
+    audio_size = audio.stat().st_size
+    matches = []
+    for project in folder.iterdir():
+        if not project.is_dir() or project.name.startswith('.'):
+            continue
+        assets = project / 'AutoAssets'
+        baseline = assets / 'lyrics.srt'
+        if not baseline.is_file():
+            continue
+        same_song = False
+        for source in assets.glob('song.*'):
+            if not source.is_file() or source.stat().st_size != audio_size:
+                continue
+            if song_hash(source) == fingerprint:
+                same_song = True
+                break
+        if not same_song:
+            continue
+        try:
+            initial = _valid_rows(parse_srt(baseline))
+        except (ValueError, OSError, UnicodeDecodeError):
+            continue
+        saved = _project_timeline(project, initial)
+        if saved is None:
+            continue
+        rows, edited_timestamp = saved
+        if edited_timestamp <= saved_timestamp + .01 or not rows:
+            continue
+        if existing and existing.get('verified') and not _caption_rows_differ(rows, existing['rows']):
+            continue
+        matches.append((edited_timestamp, project, rows))
+    if not matches:
+        return None
+    _, project, rows = max(matches, key=lambda item: item[0])
+    library.save(audio, rows, verified=True, source='capcut-previous-project',
+                 display_name=project.name)
+    say(f'CapCut: перенёс {len(rows)} исправленных субтитров из проекта «{project.name}».')
+    return project

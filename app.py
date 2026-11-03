@@ -708,6 +708,7 @@ class MainWindow(QMainWindow):
         titles=QWidget(); t=vertical(titles,6)
         t.addWidget(label('Новый монтаж','heading'))
         t.addWidget(label('Загрузи трек — всё остальное соберём автоматически.','muted'))
+        t.addWidget(label('Для повторного ролика сначала сохрани изменения в CapCut — я перенесу текст и тайминги автоматически.','muted',True))
         hdr.addWidget(titles);hdr.addStretch()
         hdr.addWidget(label('PIN • AUTO','badge'))
         l.addLayout(hdr)

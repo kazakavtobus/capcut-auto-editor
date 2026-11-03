@@ -91,6 +91,78 @@ def _separate_vocals(audio:Path, workdir:Path, progress):
         progress('Не удалось запустить Demucs: '+str(exc));return None
 
 
+
+MISSING_LYRICS = '[ДОПИШИ ТЕКСТ]'
+
+
+def _voice_regions(audio: Path, progress=None):
+    """Speech-only hints from Silero VAD, not a guarantee of vocals in music."""
+    try:
+        from faster_whisper.audio import decode_audio
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+        signal = decode_audio(str(audio), sampling_rate=16000)
+        options = VadOptions(min_speech_duration_ms=500, min_silence_duration_ms=250,
+                             speech_pad_ms=0)
+        spans = get_speech_timestamps(signal, vad_options=options, sampling_rate=16000)
+        return [(int(p['start'] / 16000 * MICRO), int(p['end'] / 16000 * MICRO))
+                for p in spans]
+    except Exception as exc:
+        if progress:
+            progress('Не удалось определить пропущенные вокальные фразы: ' + str(exc)[:100])
+        return []
+
+
+def fill_unrecognized_vocals(rows, voice_regions, duration_us: int):
+    """Create editable placeholders ONLY in suspected voiced, untranscribed gaps."""
+    rows = sorted((int(a), int(b), clean_caption(t)) for a,b,t in rows if b>a and t.strip())
+    if not voice_regions:
+        return rows
+    window = max(0,int(duration_us))
+    # Whole-track speech detection is often a false positive on instrumentals.
+    if any(b-a > 11_000_000 for a,b in voice_regions):
+        return rows
+    placeholders=[]
+    for start,end in voice_regions:
+        start=max(0,int(start));end=min(window,int(end))
+        if end-start < 650_000:
+            continue
+        free=[(start,end)]
+        for a,b,_ in rows:
+            covered=(max(0,a-180_000), min(window,b+180_000))
+            fragments=[]
+            for left,right in free:
+                if covered[1]<=left or covered[0]>=right:
+                    fragments.append((left,right))
+                else:
+                    if left<covered[0]:fragments.append((left,covered[0]))
+                    if covered[1]<right:fragments.append((covered[1],right))
+            free=fragments
+        for left,right in free:
+            if right-left<700_000:
+                continue
+            nearest=min((min(abs(left-b), abs(right-a)) for a,b,_ in rows),default=0)
+            if rows and nearest>3_000_000:
+                continue
+            if right-left>6_000_000:
+                continue
+            while right-left>=700_000:
+                stop=min(right,left+2_800_000)
+                if stop-left>=700_000:
+                    placeholders.append((left,stop,MISSING_LYRICS))
+                left=stop
+    if not placeholders:
+        return rows
+    all_rows=sorted(rows+placeholders)
+    safe=[]
+    for row in all_rows:
+        if not safe or row[0]>=safe[-1][1]:
+            safe.append(row)
+        elif row[2] != MISSING_LYRICS:
+            safe=[x for x in safe if x[2]!=MISSING_LYRICS or x[1]<=row[0]]
+            if not safe or safe[-1][1]<=row[0]:safe.append(row)
+    return safe
+
+
 def _cached_captions(audio:Path):
     record = SongLibrary().load(audio)
     return record if record is not None else None
@@ -123,21 +195,32 @@ def obtain_captions(audio: Path, duration_us:int, chosen_model='medium', progres
         if second_source is not None:
             say('Перепроверяю слова и тайминги на отдельной обработке аудио...')
             second,second_score=_transcribe(second_source,model,duration_us,say)
+        say('Ищу вокальные участки, пропущенные распознаванием...')
+        voice_regions=_voice_regions(second_source or audio, progress=say)
     options=[(first,first_score),(second,second_score)]
     valid=[item for item in options if good_enough(item[0],duration_us)]
     if not valid:
-        m=transcription_quality(first,duration_us)
-        raise CaptionsNotRecognized('Не удалось надёжно распознать вокал: '
-             f'{m["count"]} фраз. Проект не создан. Попробуй модель large-v3 и Demucs.')
-    result,score=max(valid,key=lambda item:item[1])
+        placeholders=fill_unrecognized_vocals([],voice_regions,duration_us)
+        if not placeholders:
+            m=transcription_quality(first,duration_us)
+            raise CaptionsNotRecognized('Не удалось определить слова и вокальные интервалы: '
+                 f'{m["count"]} фраз. Попробуй large-v3 или добавь текст вручную.')
+        result=placeholders
+        say(f'Слова не распознаны, оставлено {len(placeholders)} мест для ручного ввода.')
+    else:
+        result,score=max(valid,key=lambda item:item[1])
     # Optional forced alignment: not required for ordinary editing.
     try:
         from alignment import available, align_existing
-        if available():
+        if available() and not any(t == MISSING_LYRICS for _,_,t in result):
             say('Пробую точное выравнивание WhisperX (подтверждённый текст не меняю)…')
             result=align_existing(audio,result,progress=say)
     except Exception as exc:
         say('WhisperX не смог уточнить тайминги, оставляю оценку Whisper: '+str(exc)[:120])
+    result=fill_unrecognized_vocals(result,voice_regions,duration_us)
+    missing=sum(text==MISSING_LYRICS for _,_,text in result)
+    if missing:
+        say(f'Пропущено вокальных фрагментов: {missing}. В CapCut созданы блоки «{MISSING_LYRICS}».')
     say(f'Сформировано {len(result)} смысловых блоков. Распознавание песен может ошибаться: '
         'для исправлений используй корректор субтитров.')
     try:
