@@ -4,6 +4,7 @@ Never silently publish an obviously broken one-caption transcript.
 """
 from __future__ import annotations
 from pathlib import Path
+import math
 import tempfile, subprocess
 
 from builder import MICRO
@@ -25,7 +26,13 @@ def good_enough(rows, duration_us):
     m=transcription_quality(rows,duration_us)
     if duration_us < 5*MICRO:return m['count']>=1 and m['chars']>=5
     if duration_us < 12*MICRO:return m['count']>=2 and m['chars']>=12
-    return m['count']>=3 and m['chars']>=18 and m['ratio']>=0.17
+    # A 2-3 line transcript for a full verse is an ASR failure, not a
+    # usable project. Old releases accidentally accepted it.
+    seconds = duration_us / MICRO
+    min_phrases = max(4, math.ceil(seconds / 7.5)) if seconds >= 20 else 3
+    return (m['count'] >= min_phrases
+            and m['chars'] >= max(22, min_phrases * 6)
+            and m['ratio'] >= 0.22)
 
 
 def _group_words(words, duration_us):
@@ -178,8 +185,14 @@ def obtain_captions(audio: Path, duration_us:int, chosen_model='medium', progres
     say=progress or (lambda _:None)
     cached=_cached_captions(audio)
     if cached and cached['verified']:
-        say('Библиотека песен: использую подтверждённые человеком слова и тайминги.')
-        return cached['rows']
+        placeholders=sum(t==MISSING_LYRICS for _,_,t in cached['rows'])
+        if placeholders and placeholders/max(len(cached['rows']),1) >= 0.30:
+            say('В библиотеке найден повреждённый набор с заглушками. '
+                'Игнорирую его и заново распознаю песню.')
+        else:
+            say('Библиотека песен: использую '+str(len(cached['rows']))+
+                ' подтверждённых фраз (источник: '+str(cached.get('source','неизвестен'))+').')
+            return cached['rows']
     if cached:
         say('Найдён непроверенный авто-черновик. Перераспознаю для улучшения качества.')
     model=chosen_model if chosen_model in ('medium','large-v3') else 'medium'
@@ -200,24 +213,32 @@ def obtain_captions(audio: Path, duration_us:int, chosen_model='medium', progres
         if second_source is not None:
             say('Перепроверяю слова и тайминги на отдельной обработке аудио...')
             second,second_score=_transcribe(second_source,model,duration_us,say)
-        say('Ищу вокальные участки, пропущенные распознаванием...')
-        voice_regions=_voice_regions(second_source or audio, progress=say)
+    # Always report BOTH attempts so the user can distinguish a cache hit from
+    # a model failure. NEVER proceed with too few captions.
     options=[(first,first_score),(second,second_score)]
+    for label,(rows,score) in zip(('оригинал','фильтрация'),options):
+        stats=transcription_quality(rows,duration_us)
+        say(f'Whisper ({label}): {stats["count"]} фраз, {stats["chars"]} символов, '
+            f'покрытие {stats["ratio"]:.0%}.')
     valid=[item for item in options if good_enough(item[0],duration_us)]
     if not valid:
-        # Keep useful genuine words if available, never replace them by VAD
-        # placeholders. For a completely failed transcript, STOP and explain.
-        result,score=max(options,key=lambda item:(len(item[0]),item[1]))
-        genuine=[t for a,b,t in result if b>a and t.strip() and t!=MISSING_LYRICS]
-        if len(genuine)<2 or sum(len(t) for t in genuine)<16:
-            raise CaptionsNotRecognized(
-                'Whisper не смог достаточно надёжно распознать песню. '
-                'Я не буду заменять весь текст фразой «ДОПИШИ ТЕКСТ». '
-                'Попробуй large-v3 или импортируй исправленные субтитры из CapCut.')
-        say('Распознавание частичное: сохраняю настоящие слова и отмечу лишь '
-            'небольшие вероятные пропуски. Проверь субтитры после монтажа.')
-    else:
-        result,score=max(valid,key=lambda item:item[1])
+        best=max(options,key=lambda x:(transcription_quality(x[0],duration_us)['count'],
+                                      transcription_quality(x[0],duration_us)['ratio']))
+        stats=transcription_quality(best[0],duration_us)
+        expected=max(4,math.ceil(duration_us/MICRO/7.5)) if duration_us>=20*MICRO else 3
+        raise CaptionsNotRecognized(
+            f'Whisper распознал слишком мало текста: {stats["count"]} фраз '
+            f'на {duration_us/MICRO:.1f} сек. Для надёжного автоматического '
+            f'монтажа нужно хотя бы {expected} фраз и достаточное покрытие песни. '
+            'Проект с обрезанными субтитрами НЕ создан. '
+            'Можно выбрать large-v3 или импортировать исправления из CapCut.')
+    # Prefer a more COMPLETE transcript over a higher average confidence from
+    # a model that missed most of the lyrics.
+    result,score=max(valid,key=lambda item:(
+        transcription_quality(item[0],duration_us)['count'],
+        transcription_quality(item[0],duration_us)['chars'],
+        transcription_quality(item[0],duration_us)['ratio'],
+        item[1]))
     # Optional forced alignment: not required for ordinary editing.
     try:
         from alignment import available, align_existing
@@ -226,11 +247,9 @@ def obtain_captions(audio: Path, duration_us:int, chosen_model='medium', progres
             result=align_existing(audio,result,progress=say)
     except Exception as exc:
         say('WhisperX не смог уточнить тайминги, оставляю оценку Whisper: '+str(exc)[:120])
-    result=fill_unrecognized_vocals(result,voice_regions,duration_us)
-    missing=sum(text==MISSING_LYRICS for _,_,text in result)
-    if missing:
-        say(f'Возможных пропущенных фраз: {missing}. Они отмечены «{MISSING_LYRICS}»; '
-            'это приблизительная подсказка, а не распознанный текст.')
+    # Automatic VAD-based gap fillers are intentionally DISABLED: Silero
+    # identifies musical instruments as voice and damaged real caption tracks.
+    # A future explicit manual opt-in can re-enable them after validation.
     say(f'Сформировано {len(result)} смысловых блоков. Распознавание песен может ошибаться: '
         'для исправлений используй корректор субтитров.')
     try:

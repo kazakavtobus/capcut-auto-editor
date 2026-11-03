@@ -209,6 +209,13 @@ def sync_previous_capcut_edits(audio: Path, projects_folder: Path,
         if saved is None:
             continue
         rows, edited_timestamp = saved
+        # Never certify a damaged auto-generated placeholder project as
+        # someone's lyrics. It must remain editable in CapCut instead.
+        placeholder_count=sum(t=='[ДОПИШИ ТЕКСТ]' for _,_,t in rows)
+        if (placeholder_count and
+                placeholder_count / max(len(rows),1) >= 0.30):
+            say(f'CapCut: пропускаю проект «{project.name}» — слишком много заглушек.')
+            continue
         if edited_timestamp <= saved_timestamp + .01 or not rows:
             continue
         if existing and existing.get('verified') and not _caption_rows_differ(rows, existing['rows']):

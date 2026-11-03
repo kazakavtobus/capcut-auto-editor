@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from caption_engine import MISSING_LYRICS, fill_unrecognized_vocals, obtain_captions
+from caption_engine import (MISSING_LYRICS, fill_unrecognized_vocals,
+                            obtain_captions, good_enough, CaptionsNotRecognized)
 from song_library import SongLibrary, sync_previous_capcut_edits
 
 def project_with_rows(folder, name, audio, baseline, actual):
@@ -104,6 +105,56 @@ class ProjectReuse(unittest.TestCase):
                  patch('caption_engine._voice_regions',return_value=[(0,3_000_000),(4_000_000,8_000_000)]):
                 with self.assertRaises(CaptionsNotRecognized):
                     obtain_captions(a,12_000_000)
+
+    def test_three_short_captions_no_longer_accepted_for_23s_song(self):
+        sparse=[(1_000_000,3_000_000,'первая строка'),
+                (6_000_000,9_000_000,'вторая строка'),
+                (12_000_000,15_000_000,'третья строка')]
+        self.assertFalse(good_enough(sparse,23_353_450))
+        fuller=sparse+[(18_000_000,21_000_000,'четвёртая строка')]
+        self.assertTrue(good_enough(fuller,23_353_450))
+
+    def test_sparse_23s_transcript_raises_instead_of_making_broken_project(self):
+        sparse=[(1_000_000,3_000_000,'первая строка'),
+                (6_000_000,9_000_000,'вторая строка'),
+                (12_000_000,15_000_000,'третья строка')]
+        with tempfile.TemporaryDirectory() as td:
+            audio=Path(td)/'song.mp3';audio.write_bytes(b'fake audio')
+            with patch('caption_engine._cached_captions',return_value=None), \
+                 patch('caption_engine._transcribe',return_value=(sparse,.95)), \
+                 patch('caption_engine.enhance_for_recognition'), \
+                 patch('caption_engine._voice_regions',side_effect=AssertionError('VAD should be disabled')):
+                with self.assertRaisesRegex(CaptionsNotRecognized,'слишком мало текста'):
+                    obtain_captions(audio,23_353_450)
+
+    def test_valid_whisper_never_auto_inserts_placeholders(self):
+        dense=[(i*3_000_000,i*3_000_000+2_000_000,f'нормальная фраза {i}')
+               for i in range(8)]
+        with tempfile.TemporaryDirectory() as td:
+            audio=Path(td)/'song.mp3';audio.write_bytes(b'fake audio')
+            with patch('caption_engine._cached_captions',return_value=None), \
+                 patch('caption_engine._transcribe',return_value=(dense,.95)), \
+                 patch('caption_engine.enhance_for_recognition'), \
+                 patch('caption_engine._voice_regions',side_effect=AssertionError('VAD should be disabled')), \
+                 patch('caption_engine.SongLibrary') as lib:
+                rows=obtain_captions(audio,25_000_000)
+        self.assertEqual(rows,dense)
+        self.assertFalse(any(t==MISSING_LYRICS for _,_,t in rows))
+
+    def test_corrupted_verified_cache_ignored(self):
+        cached={'verified':True,'source':'capcut-previous-project','rows':[
+            (0,2_000_000,MISSING_LYRICS),
+            (2_000_000,4_000_000,MISSING_LYRICS),
+            (4_000_000,6_000_000,'старое слово')]}
+        sparse=[(0,1_000_000,'одна строка'),(2_000_000,3_000_000,'другая'),
+                (4_000_000,5_000_000,'третья')]
+        with tempfile.TemporaryDirectory() as td:
+            audio=Path(td)/'song.mp3';audio.write_bytes(b'fake audio')
+            with patch('caption_engine._cached_captions',return_value=cached), \
+                 patch('caption_engine._transcribe',return_value=(sparse,.90)), \
+                 patch('caption_engine.enhance_for_recognition'):
+                with self.assertRaises(CaptionsNotRecognized):
+                    obtain_captions(audio,25_000_000)
 
     def test_no_placeholder_without_vad_and_no_long_music_false_positive(self):
         rows=[(500000,1400000,'слова')]
