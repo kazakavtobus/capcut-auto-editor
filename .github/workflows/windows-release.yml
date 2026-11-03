@@ -34,9 +34,20 @@ jobs:
           choco install innosetup --yes --no-progress
           python -m playwright install chromium
           python -c "import PySide6.QtMultimedia; import librosa; import faster_whisper; print('runtime imports OK')"
-      - name: Run unit tests
-        run: python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics -v
+      - name: Run unit tests and validate source
+        shell: pwsh
+        run: |
           python -m py_compile app.py manual_lyrics.py
+          if ($LASTEXITCODE -ne 0) { throw 'Python compilation failed' }
+          python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics -v
+          if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
+      - name: Smoke test manual song library UI
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -c "from PySide6.QtWidgets import QApplication; from app import ManualSongDialog,SongLibraryDialog; q=QApplication([]); d=ManualSongDialog(None); x=SongLibraryDialog(None); assert d.table.columnCount()==3; assert x.table.columnCount()==4; d.close(); x.close(); print('Manual library UI OK')"
+          if ($LASTEXITCODE -ne 0) { throw 'Manual song library UI smoke test failed' }
       - name: Build PyInstaller app (no private templates or personal files)
         shell: pwsh
         run: |
