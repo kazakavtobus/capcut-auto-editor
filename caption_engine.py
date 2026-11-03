@@ -115,8 +115,13 @@ def _voice_regions(audio: Path, progress=None):
 def fill_unrecognized_vocals(rows, voice_regions, duration_us: int):
     """Create editable placeholders ONLY in suspected voiced, untranscribed gaps."""
     rows = sorted((int(a), int(b), clean_caption(t)) for a,b,t in rows if b>a and t.strip())
-    if not voice_regions:
+    # CRITICAL: voice activity on a song does not imply recognizable lyrics.
+    # Never fabricate a timeline made entirely of [ДОПИШИ ТЕКСТ].
+    if len(rows) < 2 or not voice_regions:
         return rows
+    if sum(len(t.replace(' ', '')) for _,_,t in rows) < 12:
+        return rows
+    max_placeholders = min(3, max(1, len(rows) // 6))
     window = max(0,int(duration_us))
     # Whole-track speech detection is often a false positive on instrumentals.
     if any(b-a > 11_000_000 for a,b in voice_regions):
@@ -143,13 +148,13 @@ def fill_unrecognized_vocals(rows, voice_regions, duration_us: int):
             nearest=min((min(abs(left-b), abs(right-a)) for a,b,_ in rows),default=0)
             if rows and nearest>3_000_000:
                 continue
-            if right-left>6_000_000:
+            # Conservative: one short suspected missing phrase, not a whole
+            # instrumental section split into repeated placeholders.
+            if right-left > 2_800_000:
                 continue
-            while right-left>=700_000:
-                stop=min(right,left+2_800_000)
-                if stop-left>=700_000:
-                    placeholders.append((left,stop,MISSING_LYRICS))
-                left=stop
+            if len(placeholders) >= max_placeholders:
+                break
+            placeholders.append((left,right,MISSING_LYRICS))
     if not placeholders:
         return rows
     all_rows=sorted(rows+placeholders)
@@ -200,13 +205,17 @@ def obtain_captions(audio: Path, duration_us:int, chosen_model='medium', progres
     options=[(first,first_score),(second,second_score)]
     valid=[item for item in options if good_enough(item[0],duration_us)]
     if not valid:
-        placeholders=fill_unrecognized_vocals([],voice_regions,duration_us)
-        if not placeholders:
-            m=transcription_quality(first,duration_us)
-            raise CaptionsNotRecognized('Не удалось определить слова и вокальные интервалы: '
-                 f'{m["count"]} фраз. Попробуй large-v3 или добавь текст вручную.')
-        result=placeholders
-        say(f'Слова не распознаны, оставлено {len(placeholders)} мест для ручного ввода.')
+        # Keep useful genuine words if available, never replace them by VAD
+        # placeholders. For a completely failed transcript, STOP and explain.
+        result,score=max(options,key=lambda item:(len(item[0]),item[1]))
+        genuine=[t for a,b,t in result if b>a and t.strip() and t!=MISSING_LYRICS]
+        if len(genuine)<2 or sum(len(t) for t in genuine)<16:
+            raise CaptionsNotRecognized(
+                'Whisper не смог достаточно надёжно распознать песню. '
+                'Я не буду заменять весь текст фразой «ДОПИШИ ТЕКСТ». '
+                'Попробуй large-v3 или импортируй исправленные субтитры из CapCut.')
+        say('Распознавание частичное: сохраняю настоящие слова и отмечу лишь '
+            'небольшие вероятные пропуски. Проверь субтитры после монтажа.')
     else:
         result,score=max(valid,key=lambda item:item[1])
     # Optional forced alignment: not required for ordinary editing.
@@ -220,7 +229,8 @@ def obtain_captions(audio: Path, duration_us:int, chosen_model='medium', progres
     result=fill_unrecognized_vocals(result,voice_regions,duration_us)
     missing=sum(text==MISSING_LYRICS for _,_,text in result)
     if missing:
-        say(f'Пропущено вокальных фрагментов: {missing}. В CapCut созданы блоки «{MISSING_LYRICS}».')
+        say(f'Возможных пропущенных фраз: {missing}. Они отмечены «{MISSING_LYRICS}»; '
+            'это приблизительная подсказка, а не распознанный текст.')
     say(f'Сформировано {len(result)} смысловых блоков. Распознавание песен может ошибаться: '
         'для исправлений используй корректор субтитров.')
     try:

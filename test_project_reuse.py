@@ -81,6 +81,30 @@ class ProjectReuse(unittest.TestCase):
         self.assertEqual([t for _,_,t in got].count(MISSING_LYRICS),1)
         self.assertTrue(all(a[1]<=b[0] for a,b in zip(got,got[1:])))
 
+    def test_no_all_placeholder_timeline(self):
+        self.assertEqual(fill_unrecognized_vocals([],[(0,2_000_000),(3_000_000,5_000_000)],8_000_000),[])
+        self.assertEqual(fill_unrecognized_vocals([(0,400_000,'а')],[(500_000,1_500_000)],8_000_000),
+                         [(0,400_000,'а')])
+
+    def test_placeholder_count_bounded_and_real_words_preserved(self):
+        source=[(i*2_000_000,i*2_000_000+1_000_000,f'правильные слова {i}')
+                for i in range(12)]
+        voice=[(i*2_000_000+1_200_000,i*2_000_000+1_950_000) for i in range(12)]
+        result=fill_unrecognized_vocals(source,voice,25_000_000)
+        self.assertLessEqual(sum(x[2]==MISSING_LYRICS for x in result),2)
+        self.assertTrue(all(x in result for x in source))
+
+    def test_fully_failed_transcription_stops_not_placeholder(self):
+        from caption_engine import CaptionsNotRecognized
+        with tempfile.TemporaryDirectory() as td:
+            a=Path(td)/'song.mp3';a.write_bytes(b'mock')
+            with patch('caption_engine._cached_captions',return_value=None), \
+                 patch('caption_engine._transcribe',return_value=([],0.0)), \
+                 patch('caption_engine.enhance_for_recognition',return_value=None), \
+                 patch('caption_engine._voice_regions',return_value=[(0,3_000_000),(4_000_000,8_000_000)]):
+                with self.assertRaises(CaptionsNotRecognized):
+                    obtain_captions(a,12_000_000)
+
     def test_no_placeholder_without_vad_and_no_long_music_false_positive(self):
         rows=[(500000,1400000,'слова')]
         self.assertEqual(fill_unrecognized_vocals(rows,[],6_000_000),rows)
