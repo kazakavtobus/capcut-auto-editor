@@ -57,9 +57,10 @@ class ImportWorker(QThread):
         self.lib=lib;self.paths=paths;self.category=category
     def run(self):
         count=0;errors=[]
-        for path in self.paths:
+        for i,path in enumerate(self.paths):
             try:count+=self.lib.import_video(path,self.category,self.status.emit)
             except Exception as e:errors.append(Path(path).name+': '+str(e))
+            self.status.emit(f'Обработано файлов: {i+1}/{len(self.paths)}')
         self.done.emit(count,errors)
 
 class MediaDialog(QDialog):
@@ -154,6 +155,7 @@ class ProfileWorker(QThread):
         except Exception as exc:self.failed.emit(str(exc))
 
 class ProfilesDialog(QDialog):
+    task=Signal(str,object)
     def __init__(self,parent,projects_folder):
         super().__init__(parent)
         self.folder=Path(projects_folder);self.worker=None
@@ -181,15 +183,17 @@ class ProfilesDialog(QDialog):
         if self.worker and self.worker.isRunning():return
         for w in self.controls:w.setEnabled(False)
         self.status.setText('Создаю отдельный эталон CapCut…')
+        self.task.emit('Создание эталона '+a,None)
         self.worker=ProfileWorker(a,self.folder)
         self.worker.done.connect(self.created);self.worker.failed.connect(self.failed);self.worker.start()
     def created(self,p):
         for w in self.controls:w.setEnabled(True)
         self.status.setText('Создан: '+p.name)
+        self.task.emit('Эталон создан',100)
         QMessageBox.information(self,'Эталон создан','Перезапусти CapCut, открой проект «'+p.name+'», настрой стиль всех субтитров, сохрани и закрой CapCut. Затем нажми «Из проекта CapCut» для нужного аккаунта.')
     def failed(self,msg):
         for w in self.controls:w.setEnabled(True)
-        self.status.setText(msg);QMessageBox.warning(self,'Не удалось создать эталон',msg)
+        self.status.setText(msg);self.task.emit('Ошибка создания эталона: '+msg,0);QMessageBox.warning(self,'Не удалось создать эталон',msg)
     def install(self,a,p):
         if not p:return
         if QMessageBox.question(self,'Обновить эталон аккаунта '+a+'?','Сохранённый проект станет новым шаблоном. Предыдущий вариант останется в истории. Продолжить?')!=QMessageBox.Yes:return

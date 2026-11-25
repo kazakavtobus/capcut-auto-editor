@@ -35,10 +35,21 @@ jobs:
           choco install ffmpeg --yes --no-progress
           choco install innosetup --yes --no-progress
           python -c "import PySide6.QtMultimedia; import librosa; import faster_whisper; print('runtime imports OK')"
+      - name: Bundle local Three.js composition preview
+        shell: pwsh
+        run: |
+          $deps = Join-Path $env:RUNNER_TEMP 'studio-preview'
+          New-Item -ItemType Directory -Force $deps | Out-Null
+          npm install --prefix $deps --no-audit --no-fund three@0.170.0 esbuild@0.24.2
+          if ($LASTEXITCODE -ne 0) { throw 'Preview dependencies failed' }
+          Copy-Item 'preview/compose.js' "$deps/compose.js"
+          & "$deps/node_modules/.bin/esbuild.cmd" "$deps/compose.js" --bundle --minify --outfile=assets/composition.bundle.js
+          if ($LASTEXITCODE -ne 0) { throw 'Three.js bundle failed' }
+          Copy-Item "$deps/node_modules/three/LICENSE" 'assets/three-LICENSE.txt'
       - name: Run unit tests and validate source
         shell: pwsh
         run: |
-          python -m py_compile app.py manual_lyrics.py studio_media.py studio_pipeline.py studio_ui.py studio_profiles.py desktop_ui.py builder.py
+          python -m py_compile app.py manual_lyrics.py studio_media.py studio_pipeline.py studio_ui.py studio_profiles.py desktop_ui.py composition_preview.py builder.py
           if ($LASTEXITCODE -ne 0) { throw 'Python compilation failed' }
           python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics test_studio -v
           if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
@@ -62,6 +73,8 @@ jobs:
             --collect-all librosa `
             --collect-all scipy `
             --hidden-import=PySide6.QtMultimedia `
+            --hidden-import=PySide6.QtWebEngineWidgets `
+            --hidden-import=PySide6.QtWebEngineCore `
             --collect-all sklearn `
             app.py
           $destination = 'dist/CapCutAutoEditor'

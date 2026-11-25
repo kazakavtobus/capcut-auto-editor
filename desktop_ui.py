@@ -181,14 +181,18 @@ class MediaPage(QWidget):
     def start(self,paths):
         if not paths or (self.worker and self.worker.isRunning()):return
         host=self.window()
-        if getattr(host,'worker',None) and host.worker.isRunning():
+        if hasattr(host,'busy') and host.busy():
             self.status.setText('Сначала заверши монтаж.');return
         self.add.setEnabled(False);self.folder.setEnabled(False);self.progress.show();self.progress.setRange(0,0)
         self.worker=ImportWorker(self.lib,paths,self.category.currentText())
         self.worker.status.connect(self.on_status);self.worker.done.connect(self.done);self.worker.start()
         self.task.emit('Импорт медиатеки',None)
     def on_status(self,msg):
-        self.status.setText(msg);self.task.emit(msg,None)
+        self.status.setText(msg)
+        m=re.match(r'Обработано файлов: (\d+)/(\d+)',msg)
+        percent=round(int(m[1])*100/int(m[2])) if m else None
+        if percent is not None:self.progress.setRange(0,100);self.progress.setValue(percent)
+        self.task.emit(msg,percent)
     def done(self,n,errors):
         self.progress.setRange(0,100);self.progress.setValue(100 if not errors else 0)
         self.status.setText(f'Добавлено: {n} фрагментов'+(' · есть ошибки' if errors else ''))
@@ -199,7 +203,8 @@ class MediaPage(QWidget):
         r=self.selected()
         if r:QDesktopServices.openUrl(QUrl.fromLocalFile(r['path']))
     def busy(self):
-        return bool(self.worker and self.worker.isRunning()) or bool(getattr(self.window(),'worker',None) and self.window().worker.isRunning())
+        host=self.window()
+        return bool(self.worker and self.worker.isRunning()) or bool(hasattr(host,'busy') and host.busy())
     def rename(self):
         r=self.selected()
         if not r or self.busy():return

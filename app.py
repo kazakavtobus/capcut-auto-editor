@@ -31,6 +31,7 @@ from studio_media import MediaLibrary
 from studio_pipeline import render_batch
 from studio_ui import MediaDialog, ProjectsDialog, ProfilesDialog, theme_style
 from desktop_ui import MediaPage, SongsPage, Ring, icon, apply_appearance, panel
+from composition_preview import CompositionPreview
 from subtitle_editor import _project_data, apply_changes
 from diagnostics import install_crash_logger, report_exception, LOG_FILE
 from version import VERSION
@@ -355,6 +356,7 @@ class SubtitleDialog(QDialog):
         self.preview.setMinimumHeight(76)
         self.preview.setStyleSheet('QLabel {background: #0A1325; border: 1px solid #45547C; border-radius: 16px; padding: 12px; color: #FFFFFF; font-size: 20px; font-weight: 700;}')
         l.addWidget(self.preview)
+        self.composition=CompositionPreview(self);l.addWidget(self.composition)
         self.wave=WaveformTimeline(self)
         l.addWidget(self.wave)
         self.wave.seekRequested.connect(self.seek_audio)
@@ -423,6 +425,7 @@ class SubtitleDialog(QDialog):
             self.preview.setText('Выдели строку для предпросмотра')
         else:
             self.preview.setText(clean_caption(self.table.item(r,2).text()) or 'Новый субтитр')
+        self.composition.update_words(self.preview.text())
         self.wave.set_captions(self._current_rows())
         self.wave.set_selected(r)
 
@@ -1217,7 +1220,9 @@ class MainWindow(QMainWindow):
             if self.manual_page is None and self.subtitle_page is None:
                 self.subtitle_page=self.embed(5,SubtitleDialog(self,self.last_project))
         elif index==6:
-            if self.profiles_page is None:self.profiles_page=self.embed(6,ProfilesDialog(self,self.folder.text().strip()))
+            if self.profiles_page is None:
+                self.profiles_page=self.embed(6,ProfilesDialog(self,self.folder.text().strip()))
+                self.profiles_page.task.connect(self.set_task)
             else:self.profiles_page.refresh()
         elif index==7:
             self.projects_page=self.embed(7,ProjectsDialog(self,SETTINGS.get('media_root')))
@@ -1383,7 +1388,7 @@ class MainWindow(QMainWindow):
             if QMessageBox.question(self,'Ручной ввод текста?',
                     'Whisper не смог распознать эту песню. Открыть редактор библиотеки '
                     'и вручную сохранить слова с таймкодами?')==QMessageBox.Yes:
-                self.open_manual(self.audio)
+                QTimer.singleShot(150,lambda:self.open_manual(self.audio))
 
     def open_project_folder(self):
         if self.last_project and self.last_project.is_dir():
@@ -1443,6 +1448,7 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('CapCutStudio.Desktop')
         except Exception:
             pass
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
     app=QApplication(sys.argv)
     icon_path = Path(__file__).resolve().parent / 'assets' / 'app_icon.ico'
     if icon_path.is_file():
