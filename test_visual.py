@@ -8,9 +8,9 @@ os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 # Isolate every profile, library and settings write before importing application.
 ROOT=tempfile.TemporaryDirectory()
 os.environ['LOCALAPPDATA']=ROOT.name
-from PySide6.QtWidgets import QApplication,QComboBox,QAbstractSpinBox
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor,QImage,QPalette
+from PySide6.QtWidgets import QApplication,QComboBox,QAbstractSpinBox,QAbstractItemView,QStyleOptionViewItem,QStyle
+from PySide6.QtCore import Qt,QRect
+from PySide6.QtGui import QColor,QImage,QPalette,QPainter
 from app import MainWindow,SETTINGS
 from desktop_ui import apply_appearance,asset_colors
 from studio_media import MediaLibrary
@@ -53,6 +53,14 @@ class VisualTests(unittest.TestCase):
         with patch.object(MainWindow,'initial_check',lambda self:None):
             w=MainWindow()
         w.show();self.settle()
+        w.change_page(1)
+        w.account_inputs['1'].setText('Ночной Хулиган')
+        w.account_inputs['2'].setText('Второй канал')
+        self.assertTrue(w.store_settings())
+        self.assertEqual(w.account_titles['1'].text(),'Ночной Хулиган')
+        self.assertEqual(w.account_titles['2'].text(),'Второй канал')
+        w.change_page(6)
+        self.assertEqual(w.profiles_page.titles['2'].text(),'Второй канал')
         for dark in (False,True):
             theme='dark' if dark else 'light'
             w.theme.setCurrentIndex(int(dark));apply_appearance(dark)
@@ -82,33 +90,38 @@ class VisualTests(unittest.TestCase):
                         grid=w.media_page.grid
                         self.assertEqual(grid.count(),6)
                         grid.clearSelection();self.settle()
-                        grid.scrollToItem(grid.item(0),grid.PositionAtTop);self.settle()
-                        rect=grid.visualItemRect(grid.item(0));im=grid.viewport().grab().toImage()
-                        dpr=im.devicePixelRatio()
-                        def sample(x,y):return rgb(im.pixelColor(round(x*dpr),round(y*dpr)))
-                        # Cover fills left/right, card footer follows active theme.
+                        grid.scrollToItem(grid.item(0),QAbstractItemView.ScrollHint.PositionAtTop);self.settle()
+                        rect=grid.visualItemRect(grid.item(0))
+                        self.assertTrue(rect.isValid(),(theme,width,rect))
+                        # Real viewport snapshot: assert that the first cover is visible,
+                        # sampling only coordinates that are inside the viewport.
+                        im=grid.viewport().grab().toImage();dpr=im.devicePixelRatio()
                         for x in (rect.left()+22,rect.right()-22):
-                            self.assertTrue(near(sample(x,rect.top()+55),(153,153,153),25),(theme,width,rect))
-                        r=rect.adjusted(5,5,-5,-5)
-                        # Paint the whole card offscreen: the footer can be below the viewport at compact heights.
-                        from PySide6.QtGui import QPainter
-                        from PySide6.QtWidgets import QStyleOptionViewItem,QStyle
-                        from PySide6.QtCore import QRect
-                        def rendered_footer(selected=False):
-                            card=QImage(rect.width(),rect.height(),QImage.Format_RGB32);card.fill(QColor('#ff00ff'))
-                            opt=QStyleOptionViewItem();opt.rect=QRect(0,0,rect.width(),rect.height());opt.font=grid.font();opt.palette=grid.palette()
-                            opt.state=QStyle.State_Selected if selected else QStyle.State_None
-                            painter=QPainter(card);grid.itemDelegate().paint(painter,opt,grid.indexFromItem(grid.item(0)));painter.end()
-                            return rgb(card.pixelColor(10,rect.height()-19))
-                        footer=rendered_footer()
-                        self.assertTrue(near(footer,rgb(QColor(asset_colors(dark)['surface'])),25),(theme,width,footer))
+                            px,py=round(x*dpr),round((rect.top()+55)*dpr)
+                            self.assertTrue(0<=px<im.width() and 0<=py<im.height(),(theme,width,rect))
+                            self.assertTrue(near(rgb(im.pixelColor(px,py)),(153,153,153),25),(theme,width,rect))
+                        # Also render the complete card independently of scroll clipping.
+                        # Use the exact delegate and item model from the visible gallery.
+                        def check_full_card(selected=False):
+                            card=QImage(rect.width(),rect.height(),QImage.Format.Format_RGB32)
+                            card.fill(QColor('#ff00ff'))
+                            opt=QStyleOptionViewItem()
+                            opt.rect=QRect(0,0,rect.width(),rect.height())
+                            opt.font=grid.font();opt.palette=grid.palette()
+                            opt.state=QStyle.StateFlag.State_Selected if selected else QStyle.StateFlag.State_None
+                            painter=QPainter(card)
+                            try:grid.itemDelegate().paint(painter,opt,grid.indexFromItem(grid.item(0)))
+                            finally:painter.end()
+                            for x in (22,card.width()-22):
+                                self.assertTrue(near(rgb(card.pixelColor(x,55)),(153,153,153),25),(theme,width,selected))
+                            footer=rgb(card.pixelColor(10,card.height()-19))
+                            self.assertTrue(near(footer,rgb(QColor(asset_colors(dark,selected)['surface'])),25),(theme,width,selected,footer))
+                            self.assertTrue(card.save(str(self.out/f'{theme}-{width}-card-{selected}.png')))
+                        check_full_card()
                         grid.setCurrentRow(0);self.settle()
                         self.assertTrue(grid.item(0).isSelected())
                         grid.viewport().grab().save(str(self.out/f'{theme}-{width}-selected.png'))
-                        rect=grid.visualItemRect(grid.item(0)).adjusted(5,5,-5,-5)
-                        selected=grid.viewport().grab().toImage()
-                        footer=rendered_footer(True)
-                        self.assertTrue(near(footer,rgb(QColor(asset_colors(dark,True)['surface'])),25),(theme,width,footer))
+                        check_full_card(True)
                         # Search and empty state must also render correctly.
                         w.media_page.search.setText('не существует');self.settle()
                         self.assertEqual(grid.count(),0);self.assertTrue(w.media_page.empty.isVisible())
