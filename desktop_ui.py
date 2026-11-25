@@ -49,6 +49,7 @@ def apply_appearance(dark=False):
         p.setColor(role,QColor(value))
     p.setColor(QPalette.Disabled,QPalette.Text,QColor(muted));p.setColor(QPalette.Disabled,QPalette.ButtonText,QColor(muted))
     app.setPalette(p)
+    assets=(Path(__file__).resolve().parent/'assets').as_posix()
     # Explicit popup and input colors fix Fusion/native black-on-black controls.
     app.setStyleSheet(theme_style(dark)+f"""
       QMainWindow,QWidget#desktop {{background:{bg};}}
@@ -61,16 +62,21 @@ def apply_appearance(dark=False):
       QPushButton#primary {{min-height:23px;}}
       QComboBox,QSpinBox,QDoubleSpinBox,QLineEdit {{color:{text};background:{surface};min-height:23px;}}
       QComboBox::drop-down {{subcontrol-origin:padding;subcontrol-position:top right;width:26px;border:none;}}
+      QComboBox::down-arrow {{image:url("{assets}/chevron-down.svg");width:14px;height:14px;}}
+      QDoubleSpinBox::up-arrow {{image:url("{assets}/chevron-up.svg");width:11px;height:11px;}}
+      QDoubleSpinBox::down-arrow {{image:url("{assets}/chevron-down.svg");width:11px;height:11px;}}
       QComboBox QAbstractItemView,QMenu,QListView {{color:{text};background:{surface};selection-background-color:#3478f6;selection-color:white;}}
       QComboBox QAbstractItemView::item {{min-height:28px;padding:6px;}}
       QSpinBox::up-button,QSpinBox::down-button,QDoubleSpinBox::up-button,QDoubleSpinBox::down-button {{background:{surface};width:20px;}}
       QCheckBox {{spacing:9px;color:{text};}}
-      QCheckBox::indicator {{width:17px;height:17px;}}
+      QCheckBox::indicator {{width:17px;height:17px;border:1px solid #8b96a6;border-radius:5px;background:{surface};}}
+      QCheckBox::indicator:checked {{background:#3478f6;border-color:#3478f6;image:url("{assets}/check.svg");}}
       QToolTip {{background:{surface};color:{text};border:1px solid {muted};}}
       QListWidget#assets {{background:transparent;border:none;outline:none;padding:2px;}}
       QListWidget#assets::item {{border:none;}}
       QProgressBar {{min-height:7px;max-height:7px;text-align:center;}}
       QFrame#panel {{background:{surface};border:1px solid {'#343841' if dark else '#e4e7ed'};border-radius:15px;}}
+      QFrame#panel[selected="true"] {{border:2px solid #3478f6;}}
       QScrollArea {{background:transparent;border:none;}}
     """)
 
@@ -236,7 +242,7 @@ class SongsPage(QWidget):
         h=QHBoxLayout()
         for title,fn,primary in [('Выбрать для монтажа',self.use,True),('Редактировать текст',self.edit,False),('Переименовать',self.rename,False),('Удалить запись',self.remove,False)]:
             h.addWidget(button(title,fn,primary))
-        l.addLayout(h);self.search.textChanged.connect(self.refresh);self.list.itemDoubleClicked.connect(lambda _:self.edit());self.refresh()
+        l.addLayout(h);self.search.textChanged.connect(self.refresh);self.list.itemDoubleClicked.connect(lambda _:self.edit());self.list.itemSelectionChanged.connect(self.highlight);self.refresh()
     def refresh(self,*args):
         docs=[]
         for p in self.library.directory.glob('*.json'):
@@ -258,6 +264,12 @@ class SongsPage(QWidget):
             row.setAttribute(Qt.WA_TransparentForMouseEvents,True)
             self.list.addItem(item);self.list.setItemWidget(item,row)
         self.empty.setVisible(not self.entries)
+    def highlight(self):
+        for i in range(self.list.count()):
+            item=self.list.item(i);w=self.list.itemWidget(item)
+            if w:
+                w.setProperty('selected',item.isSelected())
+                w.style().unpolish(w);w.style().polish(w);w.update()
     def selected(self):
         i=self.list.currentRow();return self.entries[i] if 0<=i<len(self.entries) else None
     def audio(self,doc):
@@ -281,11 +293,11 @@ class SongsPage(QWidget):
             if path:self.host.open_manual(path)
     def rename(self):
         row=self.selected()
-        if not row:return
+        if not row or self.host.busy():return
         p,d=row;name,ok=QInputDialog.getText(self,'Название песни','Название:',text=d.get('filename',''))
         if ok and name.strip():
             d['filename']=name.strip();tmp=p.with_suffix('.tmp');tmp.write_text(json.dumps(d,ensure_ascii=False,indent=2),encoding='utf-8');tmp.replace(p);self.refresh()
     def remove(self):
         row=self.selected()
-        if row and QMessageBox.question(self,'Удалить запись?','Удалить сохранённый текст и таймкоды? Аудио и проекты останутся.')==QMessageBox.Yes:
+        if row and not self.host.busy() and QMessageBox.question(self,'Удалить запись?','Удалить сохранённый текст и таймкоды? Аудио и проекты останутся.')==QMessageBox.Yes:
             row[0].unlink();self.refresh()

@@ -180,7 +180,8 @@ class ProfilesDialog(QDialog):
             except FileNotFoundError:status='Эталон пока не добавлен. Можно создать копию первого.'
             w.setText(status+' · резервных версий: '+str(len(versions(a))))
     def create(self,a):
-        if self.worker and self.worker.isRunning():return
+        host=self.window()
+        if (self.worker and self.worker.isRunning()) or (hasattr(host,'busy') and host.busy()):return
         for w in self.controls:w.setEnabled(False)
         self.status.setText('Создаю отдельный эталон CapCut…')
         self.task.emit('Создание эталона '+a,None)
@@ -195,7 +196,8 @@ class ProfilesDialog(QDialog):
         for w in self.controls:w.setEnabled(True)
         self.status.setText(msg);self.task.emit('Ошибка создания эталона: '+msg,0);QMessageBox.warning(self,'Не удалось создать эталон',msg)
     def install(self,a,p):
-        if not p:return
+        host=self.window()
+        if not p or (hasattr(host,'busy') and host.busy()):return
         if QMessageBox.question(self,'Обновить эталон аккаунта '+a+'?','Сохранённый проект станет новым шаблоном. Предыдущий вариант останется в истории. Продолжить?')!=QMessageBox.Yes:return
         try:
             from studio_profiles import install_template

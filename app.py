@@ -1080,6 +1080,7 @@ class MainWindow(QMainWindow):
         for title in w.findChildren(TitleBar):title.hide()
         scroll=QScrollArea();scroll.setWidgetResizable(True);scroll.setWidget(w)
         self.pages.removeWidget(old);self.pages.insertWidget(index,scroll);old.deleteLater()
+        if not isinstance(w,ManualSongDialog):w.rejected.connect(lambda:QTimer.singleShot(0,w.show))
         w.show();return w
 
     def open_manual(self,audio=None):
@@ -1092,6 +1093,7 @@ class MainWindow(QMainWindow):
         self.subtitle_page=None
         w=ManualSongDialog(self,audio);self.manual_page=w
         w.accepted.connect(self.manual_saved)
+        w.rejected.connect(self.manual_saved)
         self.embed(5,w);self.pages.setCurrentIndex(5);self.breadcrumb.setText('Субтитры')
         for i,b in self.nav.items():b.setChecked(i==5)
 
