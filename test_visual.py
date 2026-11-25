@@ -2,6 +2,7 @@
 Screenshots use generated sample assets only, never a user's library.
 """
 import os,sys,tempfile,json,unittest
+from unittest.mock import patch
 from pathlib import Path
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 # Isolate every profile, library and settings write before importing application.
@@ -48,9 +49,9 @@ class VisualTests(unittest.TestCase):
     def settle(self):
         for _ in range(4):self.q.processEvents()
     def test_render_all_pages_both_themes_and_sizes(self):
-        w=MainWindow()
-        # The first-run check would navigate away from the fixture; use an isolated window and cancel it by replacing callback behavior.
-        w.initial_check=lambda:None
+        # Replace before construction: QTimer captures the callback at startup.
+        with patch.object(MainWindow,'initial_check',lambda self:None):
+            w=MainWindow()
         w.show();self.settle()
         for dark in (False,True):
             theme='dark' if dark else 'light'
@@ -92,6 +93,11 @@ class VisualTests(unittest.TestCase):
                         self.assertTrue(near(footer,rgb(QColor(asset_colors(dark)['surface'])),25),(theme,width,footer))
                         grid.setCurrentRow(0);self.settle()
                         self.assertTrue(grid.item(0).isSelected())
+                        grid.viewport().grab().save(str(self.out/f'{theme}-{width}-selected.png'))
+                        rect=grid.visualItemRect(grid.item(0)).adjusted(5,5,-5,-5)
+                        selected=grid.viewport().grab().toImage()
+                        footer=rgb(selected.pixelColor(round((rect.left()+5)*selected.devicePixelRatio()),round((rect.bottom()-14)*selected.devicePixelRatio())))
+                        self.assertTrue(near(footer,rgb(QColor(asset_colors(dark,True)['surface'])),25),(theme,width,footer))
                         # Search and empty state must also render correctly.
                         w.media_page.search.setText('не существует');self.settle()
                         self.assertEqual(grid.count(),0);self.assertTrue(w.media_page.empty.isVisible())
@@ -101,6 +107,11 @@ class VisualTests(unittest.TestCase):
                         self.assertTrue(w.model.view().isVisible())
                         w.model.view().grab().save(str(self.out/f'{theme}-{width}-combo.png'))
                         w.model.hidePopup();self.settle()
+                w.open_manual();self.settle()
+                self.assertIsNotNone(w.manual_page)
+                self.assertTrue(w.manual_page.isVisible())
+                w.grab().save(str(self.out/f'{theme}-{width}-manual.png'))
+                w.manual_page.reject();self.settle()
         w.close();self.settle()
 
 if __name__=='__main__':
