@@ -380,7 +380,7 @@ def settings_file() -> Path:
 
 def load_settings() -> dict:
     default={'provider':'local','api_key':'','theme':'light','media_root':'',
-             'account_1_name':'Аккаунт 1','account_2_name':'Аккаунт 2',
+             'account_1_name':'Unison Muz','account_2_name':'Аккаунт 2',
              'projects_folder':str(Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) /
                       'CapCut'/'User Data'/'Projects'/'com.lveditor.draft'),
              'whisper_model':'medium','separate_vocals':False}
@@ -389,6 +389,7 @@ def load_settings() -> dict:
         data=json.loads(p.read_text(encoding='utf-8'))
         default.update({k:v for k,v in data.items() if k in default and isinstance(v,type(default[k]))})
     except (OSError,json.JSONDecodeError):pass
+    if default['account_1_name']=='Аккаунт 1':default['account_1_name']='Unison Muz'
     if default['whisper_model']=='small':
         default['whisper_model']='medium'
     # Migrating from V3: unused stock providers without an API key now use Pinterest.

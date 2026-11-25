@@ -33,6 +33,7 @@ from studio_ui import MediaDialog, ProjectsDialog, ProfilesDialog, theme_style
 from desktop_ui import MediaPage, SongsPage, Ring, ProjectCount, icon, apply_appearance, panel
 from composition_preview import CompositionPreview
 from account_names import account_name,validate_account_name
+from telegram_delivery import load_config as load_telegram,save_config as save_telegram,discover as discover_telegram,send_export,caption as telegram_caption,chat_ids,validate_token
 from subtitle_editor import _project_data, apply_changes
 from diagnostics import install_crash_logger, report_exception, LOG_FILE
 from version import VERSION
@@ -281,6 +282,26 @@ class UpdateWorker(QThread):
         except Exception as exc:
             report_exception(exc,'Ошибка обновления')
             self.failed.emit(str(exc))
+
+
+class TelegramWorker(QThread):
+    ready=Signal(object)
+    failed=Signal(str)
+    update=Signal(str)
+    def __init__(self,mode,token,chats='',path='',settings=None,account='1',song=''):
+        super().__init__()
+        self.mode=mode;self.token=token;self.chats=chats;self.path=path
+        self.settings=settings or {};self.account=account;self.song=song
+    def run(self):
+        try:
+            if self.mode=='discover':result=discover_telegram(self.token)
+            else:result=send_export(self.token,self.chats,self.path,self.settings,self.account,self.song,self.update.emit)
+            self.ready.emit(result)
+        except Exception as exc:
+            from telegram_delivery import TelegramError
+            # Never pass untrusted exceptions containing a Bot API URL to the log.
+            self.failed.emit(str(exc) if isinstance(exc,TelegramError) else 'Ошибка локальной отправки. Проверь файл, доступ к сети и настройки.')
+        finally:self.token=''
 
 
 class AlignmentWorker(QThread):
@@ -943,13 +964,13 @@ class SongLibraryDialog(QDialog):
 
 class MainWindow(QMainWindow):
     # Existing rendering and update functions remain in use; the shell is rebuilt.
-    TITLES=['Монтаж','Настройки','О программе','Медиатека','Песни','Субтитры','Эталоны','Проекты','Обработка']
+    TITLES=['Монтаж','Настройки','О программе','Медиатека','Песни','Субтитры','Эталоны','Проекты','Обработка','Отгрузка']
     def __init__(self):
         super().__init__()
         self.setWindowTitle('CapCut Studio · '+VERSION)
         self.setWindowIcon(icon('logo','#3478f6',32))
         self.resize(1330,850);self.setMinimumSize(820,580)
-        self.worker=None;self.login_worker=None;self.update_worker=None
+        self.worker=None;self.login_worker=None;self.update_worker=None;self.telegram_worker=None
         self.last_project=None;self.audio='';self._updating=False
         self.media_page=None;self.songs_page=None;self.subtitle_page=None;self.manual_page=None
         self.profiles_page=None;self.projects_page=None
@@ -969,6 +990,7 @@ class MainWindow(QMainWindow):
         self._make_main_page();self._make_settings_page();self._make_about_page()
         for i in range(3,8):self.pages.addWidget(QWidget())
         self._make_tasks_page()
+        self._make_telegram_page()
         self.change_page(0)
         QTimer.singleShot(450,self.initial_check)
 
@@ -979,7 +1001,7 @@ class MainWindow(QMainWindow):
         self.brand=label('Studio','cardHeading');brand.addWidget(self.brand);brand.addStretch();l.addLayout(brand)
         l.addSpacing(20)
         self.nav={};self.nav_data={}
-        for title,index,key in [('Монтаж',0,'montage'),('Медиатека',3,'media'),('Песни',4,'songs'),('Субтитры',5,'captions'),('Эталоны',6,'profiles'),('Проекты',7,'projects'),('Обработка',8,'tasks'),('Настройки',1,'settings'),('О программе',2,'about')]:
+        for title,index,key in [('Монтаж',0,'montage'),('Медиатека',3,'media'),('Песни',4,'songs'),('Субтитры',5,'captions'),('Эталоны',6,'profiles'),('Проекты',7,'projects'),('Отгрузка',9,'send'),('Обработка',8,'tasks'),('Настройки',1,'settings'),('О программе',2,'about')]:
             b=btn(title,'nav',lambda _=False,i=index:self.change_page(i));b.setCheckable(True);b.setToolTip(title)
             self.nav[index]=b;self.nav_data[index]=(title,key);l.addWidget(b)
         l.addStretch()
@@ -1046,6 +1068,111 @@ class MainWindow(QMainWindow):
         self.log=QTextEdit();self.log.setReadOnly(True);self.log.setMinimumHeight(320);self.log.setPlaceholderText('Здесь появятся этапы обработки.');l.addWidget(self.log,1)
         l.addWidget(btn('Открыть полный журнал ошибок','secondary',self.open_logs),0,Qt.AlignLeft)
 
+    def _make_telegram_page(self):
+        content=self.scroll_page();l=vertical(content,14,(24,22,24,22))
+        l.addWidget(label('ТикТок Завод','heading'))
+        l.addWidget(label('Отгрузка готовых MP4 в Telegram без сжатия. Пока экспорт из CapCut выполняется вручную.','muted',True))
+        config=load_telegram()
+        c=card();cl=vertical(c,10,(18,16,18,16))
+        cl.addWidget(label('ПОДКЛЮЧЕНИЕ БОТА','micro'))
+        cl.addWidget(label('Токен из BotFather','muted'))
+        self.tg_token=QLineEdit(config['token']);self.tg_token.setEchoMode(QLineEdit.Password);self.tg_token.setPlaceholderText('Вставить токен');cl.addWidget(self.tg_token)
+        cl.addWidget(label('Chat ID — личный чат или закрытая группа, через запятую','muted',True))
+        self.tg_chats=QLineEdit(config['chats']);self.tg_chats.setPlaceholderText('123456789, -1001234567890');cl.addWidget(self.tg_chats)
+        cl.addWidget(label('Вы и брат должны нажать /start у бота или добавить его в закрытую группу и отправить /start. Затем нажми «Найти чаты» и скопируй нужные ID.','muted',True))
+        h=horizontal(space=8)
+        self.tg_find=btn('Найти чаты','secondary',self.telegram_find)
+        self.tg_save=btn('Сохранить подключение','secondary',self.telegram_save)
+        h.addWidget(self.tg_find);h.addWidget(self.tg_save);cl.addLayout(h)
+        self.tg_found=QTextEdit();self.tg_found.setReadOnly(True);self.tg_found.setMaximumHeight(115);self.tg_found.setPlaceholderText('Найденные чаты появятся здесь');cl.addWidget(self.tg_found)
+        l.addWidget(c)
+        c=card();cl=vertical(c,10,(18,16,18,16))
+        cl.addWidget(label('ГОТОВЫЙ РОЛИК','micro'))
+        self.tg_file=QLineEdit();self.tg_file.setReadOnly(True);self.tg_file.setPlaceholderText('Выбери экспортированный MP4')
+        h=horizontal(space=8);h.addWidget(self.tg_file,1);h.addWidget(btn('Выбрать MP4','secondary',self.telegram_pick));cl.addLayout(h)
+        self.tg_account=QComboBox()
+        for a in ('1','2'):self.tg_account.addItem(account_name(SETTINGS,a),a)
+        cl.addWidget(self.tg_account)
+        self.tg_song=QLineEdit();self.tg_song.setMaxLength(180);self.tg_song.setPlaceholderText('Название песни');cl.addWidget(self.tg_song)
+        self.tg_preview=QLabel();self.tg_preview.setTextFormat(Qt.PlainText);self.tg_preview.setWordWrap(True);cl.addWidget(self.tg_preview)
+        self.tg_song.textChanged.connect(self.telegram_preview);self.tg_account.currentIndexChanged.connect(self.telegram_preview)
+        self.tg_send=btn('Отправить готовый ролик','primary',self.telegram_send);cl.addWidget(self.tg_send)
+        self.tg_status=QLabel('До 50 МБ на файл.');self.tg_status.setTextFormat(Qt.PlainText);self.tg_status.setWordWrap(True);cl.addWidget(self.tg_status)
+        l.addWidget(c);l.addStretch();self.telegram_preview()
+
+    def telegram_preview(self,*args):
+        self.tg_preview.setText(telegram_caption(SETTINGS,self.tg_account.currentData() or '1',self.tg_song.text(),'номер_ролика'))
+
+    def open_delivery(self,project=None):
+        self.change_page(9)
+        if project:
+            self.tg_file.clear()
+            i=self.tg_account.findData(str(project.get('account','1')))
+            if i>=0:self.tg_account.setCurrentIndex(i)
+            title=Path(project.get('path','')).name
+            try:
+                import json
+                key=project.get('song','')
+                if len(key)==64 and all(ch in '0123456789abcdef' for ch in key):
+                    data=json.loads((SongLibrary().directory/(key+'.json')).read_text(encoding='utf-8'))
+                    title=Path(data.get('filename',title)).stem
+            except (OSError,ValueError):pass
+            self.tg_song.setText(title[:180])
+
+    def telegram_pick(self):
+        if self.busy():return
+        path,_=QFileDialog.getOpenFileName(self,'Готовый экспорт MP4','','Видео MP4 (*.mp4)')
+        if path:
+            self.tg_file.setText(path)
+            if not self.tg_song.text().strip():self.tg_song.setText(Path(path).stem[:180])
+
+    def telegram_save(self):
+        if self.busy():return
+        try:save_telegram(self.tg_token.text(),self.tg_chats.text())
+        except Exception:
+            QMessageBox.warning(self,'ТикТок Завод','Проверь токен и числовые Chat ID. Не удалось сохранить подключение.');return
+        self.tg_status.setText('Подключение сохранено на этом компьютере.')
+
+    def telegram_controls(self,enabled):
+        for w in (self.tg_token,self.tg_chats,self.tg_find,self.tg_save,self.tg_send,self.tg_account,self.tg_song):w.setEnabled(enabled)
+
+    def telegram_find(self):
+        if self.busy():return
+        try:token=validate_token(self.tg_token.text())
+        except ValueError:return
+        except Exception:QMessageBox.warning(self,'ТикТок Завод','Вставь токен из BotFather.');return
+        self.telegram_controls(False);self.tg_status.setText('Проверяю подключение…')
+        self.telegram_worker=TelegramWorker('discover',token)
+        self.telegram_worker.ready.connect(self.telegram_found);self.telegram_worker.failed.connect(self.telegram_failed)
+        self.telegram_worker.finished.connect(lambda:self.telegram_controls(True));self.telegram_worker.start()
+
+    def telegram_found(self,result):
+        rows=[result['bot']]+[name+' — '+cid for cid,name in result['chats'].items()]
+        if len(rows)==1:rows.append('Нет новых сообщений. Открой бота и отправь /start.')
+        self.tg_found.setPlainText('\n'.join(rows));self.tg_status.setText('Выбери нужные Chat ID вручную.')
+
+    def telegram_send(self):
+        if self.busy():return
+        try:
+            token=validate_token(self.tg_token.text());ids=chat_ids(self.tg_chats.text())
+            p=Path(self.tg_file.text())
+            if not p.is_file() or p.suffix.lower()!='.mp4':raise ValueError()
+        except Exception:
+            QMessageBox.warning(self,'ТикТок Завод','Укажи токен, Chat ID и готовый MP4.');return
+        account=self.tg_account.currentData();song=self.tg_song.text().strip() or p.stem
+        if QMessageBox.question(self,'Подтверждение отгрузки','Отправить файл '+p.name+'\nАккаунт: '+account_name(SETTINGS,account)+'\nПолучатели: '+', '.join(ids)+'?')!=QMessageBox.Yes:return
+        self.telegram_controls(False);self.tg_status.setText('Отправляю готовый MP4…')
+        self.telegram_worker=TelegramWorker('send',token,', '.join(ids),str(p),dict(SETTINGS),account,song)
+        self.telegram_worker.update.connect(lambda msg:self.tg_status.setText(msg))
+        self.telegram_worker.ready.connect(self.telegram_sent);self.telegram_worker.failed.connect(self.telegram_failed)
+        self.telegram_worker.finished.connect(lambda:self.telegram_controls(True));self.telegram_worker.start()
+
+    def telegram_sent(self,result):
+        self.tg_status.setText('\n'.join(cid+': '+status for cid,status in result))
+
+    def telegram_failed(self,msg):
+        self.tg_status.setText(msg)
+
     def update_build_label(self,*args):
         if not (self.worker and self.worker.isRunning()):self.build_btn.setText('Создать проектов: '+str(sum(n.value() for n in self.counts.values())))
 
@@ -1068,7 +1195,7 @@ class MainWindow(QMainWindow):
         self.task_summary.setText(msg);self.log.append('• '+msg)
 
     def busy(self):
-        workers=[self.worker,self.update_worker]
+        workers=[self.worker,self.update_worker,self.telegram_worker]
         for p in (self.media_page,self.profiles_page,self.subtitle_page):
             if p is not None:
                 workers.extend([getattr(p,'worker',None),getattr(p,'alignment_worker',None)])
@@ -1234,6 +1361,9 @@ class MainWindow(QMainWindow):
             else:self.profiles_page.refresh()
         elif index==7:
             self.projects_page=self.embed(7,ProjectsDialog(self,SETTINGS.get('media_root'),SETTINGS))
+        if index==9:
+            for i,a in enumerate(('1','2')):self.tg_account.setItemText(i,account_name(SETTINGS,a))
+            self.telegram_preview()
         self.pages.setCurrentIndex(index)
         self.breadcrumb.setText(self.TITLES[index])
         for i,b in self.nav.items():b.setChecked(i==index)

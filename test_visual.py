@@ -81,7 +81,7 @@ class VisualTests(unittest.TestCase):
                     control.setValue(1 if account=='1' else 0)
                 w.counts['1'].plus.click();self.assertEqual(w.counts['1'].value(),2)
                 self.assertIn('2',w.build_btn.text());w.counts['1'].minus.click()
-                for page in (0,3,4,5,6,7,8,1,2):
+                for page in (0,3,4,5,6,7,8,9,1,2):
                     w.change_page(page);self.settle()
                     self.assertEqual(w.pages.currentIndex(),page)
                     self.assertTrue(w.pages.currentWidget().isVisible())

@@ -19,6 +19,7 @@ ICONS={
  'captions':'<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 10h10M7 14h7"/>',
  'profiles':'<rect x="4" y="3" width="16" height="18" rx="3"/><circle cx="12" cy="9" r="3"/><path d="M7 17c0-4 10-4 10 0"/>',
  'projects':'<rect x="4" y="7" width="16" height="14" rx="2"/><path d="M8 7V3h8v4M8 12h8m-8 4h5"/>',
+ 'send':'<path d="m3 11 18-8-7 18-4-8zM10 13 21 3"/>',
  'tasks':'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
  'settings':'<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/>',
  'about':'<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/>',

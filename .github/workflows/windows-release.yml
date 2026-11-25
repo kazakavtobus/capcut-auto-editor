@@ -80,7 +80,7 @@ jobs:
         run: |
           python -m py_compile app.py manual_lyrics.py studio_media.py studio_pipeline.py studio_ui.py studio_profiles.py desktop_ui.py composition_preview.py builder.py
           if ($LASTEXITCODE -ne 0) { throw 'Python compilation failed' }
-          python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics test_studio -v
+          python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics test_studio test_telegram_delivery -v
           if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
       - name: Smoke test manual song library UI
         shell: pwsh
