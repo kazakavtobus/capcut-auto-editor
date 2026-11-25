@@ -98,3 +98,22 @@ class StudioTests(unittest.TestCase):
             self.assertEqual(len(versions('1',profile_dir)),1)
             install_template('1',versions('1',profile_dir)[0],profile_dir)
             self.assertEqual(active_template('1',profile_dir).read_bytes(),original)
+
+
+    def test_remove_media_keeps_render_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lib=MediaLibrary(tmp)
+            source=lib.root/'originals'/'source.mp4';source.write_bytes(b'original')
+            clip=lib.root/'clips'/'clip.mp4';clip.write_bytes(b'clip')
+            preview=lib.root/'previews'/'clip.jpg';preview.write_bytes(b'preview')
+            with lib.connect() as c:
+                c.execute('INSERT INTO sources VALUES(?,?,?,?)',('s','Старое имя',str(source),'Город'))
+                c.execute('INSERT INTO clips(id,source,idx,path,preview) VALUES(?,?,?,?,?)',('c','s',0,str(clip),str(preview)))
+            lib.rename_source('s','Ночная улица')
+            rows=lib.clips();self.assertEqual(rows[0]['name'],'Ночная улица')
+            lib.record('1','existing project',rows,'song')
+            lib.remove_media('c',True)
+            self.assertEqual(lib.clips(),[])
+            self.assertEqual(len(lib.projects()),1)
+            self.assertFalse(source.exists());self.assertFalse(clip.exists())
+            self.assertEqual(len(list((lib.root/'trash').rglob('*.mp4'))),2)

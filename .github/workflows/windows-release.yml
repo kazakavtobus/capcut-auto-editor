@@ -4,6 +4,7 @@ on:
     branches:
       - main
       - studio-v8
+      - studio-v81
     tags:
       - 'v*'
   workflow_dispatch:
@@ -37,7 +38,7 @@ jobs:
       - name: Run unit tests and validate source
         shell: pwsh
         run: |
-          python -m py_compile app.py manual_lyrics.py studio_media.py studio_pipeline.py studio_ui.py studio_profiles.py builder.py
+          python -m py_compile app.py manual_lyrics.py studio_media.py studio_pipeline.py studio_ui.py studio_profiles.py desktop_ui.py builder.py
           if ($LASTEXITCODE -ne 0) { throw 'Python compilation failed' }
           python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics test_studio -v
           if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
@@ -46,7 +47,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -c "from PySide6.QtWidgets import QApplication; from app import ManualSongDialog,SongLibraryDialog,MainWindow; from studio_ui import MediaDialog,ProfilesDialog; import tempfile; q=QApplication([]); d=ManualSongDialog(None); x=SongLibraryDialog(None); w=MainWindow(); tmp=tempfile.TemporaryDirectory(); m=MediaDialog(None,tmp.name); p=ProfilesDialog(None,tmp.name); assert len(p.states)==2; p.close(); assert d.table.columnCount()==3; assert x.table.columnCount()==4; assert m.table.columnCount()==6; assert len(w.counts)==2; m.close(); d.close(); x.close(); w.close(); tmp.cleanup(); print('Studio UI OK')"
+          python -c "from PySide6.QtWidgets import QApplication; from app import ManualSongDialog,SongLibraryDialog,MainWindow; from studio_ui import MediaDialog,ProfilesDialog; import tempfile; q=QApplication([]); d=ManualSongDialog(None); x=SongLibraryDialog(None); w=MainWindow(); tmp=tempfile.TemporaryDirectory(); m=MediaDialog(None,tmp.name); p=ProfilesDialog(None,tmp.name); assert len(p.states)==2; p.close(); assert d.table.columnCount()==3; assert x.table.columnCount()==4; assert m.table.columnCount()==6; assert len(w.counts)==2; w.change_page(3); assert w.media_page.grid is not None; w.change_page(4); assert w.songs_page.list is not None; w.change_page(6); assert len(w.profiles_page.states)==2; w.change_page(0); m.close(); d.close(); x.close(); w.close(); tmp.cleanup(); print('Studio UI OK')"
           if ($LASTEXITCODE -ne 0) { throw 'Manual song library UI smoke test failed' }
       - name: Build PyInstaller app (no private templates or personal files)
         shell: pwsh

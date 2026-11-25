@@ -62,4 +62,5 @@ def render_batch(audio,settings,counts,progress=None,library=None):
                 (assets/'sources.json').write_text(json.dumps({'provider':'local','account':account,'clips':[r['id'] for r in clips]},ensure_ascii=False),encoding='utf-8')
                 lib.record(account,project,clips,song_hash(audio))
                 projects.append(str(project));last_info=info
+                say(f'Готово проектов: {len(projects)}/{total}')
     return Path(projects[-1]),dict(last_info,projects=projects,total=len(projects))
