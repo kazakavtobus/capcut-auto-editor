@@ -4,7 +4,7 @@ import json
 import tempfile
 from builder import build,media_info,detect_beats,cut_ends,load_original_zip,template_zip
 from caption_engine import obtain_captions
-from song_library import APPDATA, song_hash, sync_previous_capcut_edits
+from song_library import APPDATA, SongLibrary, song_hash, sync_previous_capcut_edits
 from auto_pipeline import to_srt,unique_project_name
 from studio_media import MediaLibrary
 
@@ -40,6 +40,8 @@ def render_batch(audio,settings,counts,progress=None,library=None):
                          separate_vocals=settings.get('separate_vocals',False))
     if not rows:raise ValueError('Нет субтитров.')
     lib.store_song(audio)
+    record=SongLibrary().load(audio)
+    title=Path(record.get('filename',audio.name)).stem if record else audio.stem
     beats=detect_beats(audio)
     plans={}
     for account,template in templates.items():
@@ -53,8 +55,9 @@ def render_batch(audio,settings,counts,progress=None,library=None):
             for _ in range(n):
                 say(f'Проект {len(projects)+1}/{total} · аккаунт {account}')
                 bounds=plans[account]
-                clips=lib.choose(len(bounds))
-                name=unique_project_name(folder,Path(f'Аккаунт {account} — {audio.stem}.mp3'))
+                try:clips=lib.choose(len(bounds))
+                except ValueError as exc:raise ValueError(f'Уже создано {len(projects)} из {total} проектов. '+str(exc)) from exc
+                name=unique_project_name(folder,Path(f'Аккаунт {account} — {title}.mp3'))
                 project,info=build(str(audio),[r['path'] for r in clips],str(folder),name,
                     srt_file=str(srt),beats_override=beats,embed_assets=True,
                     local_boundaries=bounds,template_path=templates[account],progress=say)

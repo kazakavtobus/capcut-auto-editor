@@ -103,9 +103,9 @@ def parse_srt(file: Path) -> list[tuple[int,int,str]]:
                           r'(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})', lines[line_ix])
         if not match:
             raise ValueError(f'Не удалось разобрать таймкод SRT: {lines[line_ix]}')
-        vals = list(map(int, match.groups()))
+        vals = match.groups()
         def sec(a):
-            return ((a[0]*3600+a[1]*60+a[2])*MICRO + int(str(a[3]).ljust(3,'0'))*1000)
+            return ((int(a[0])*3600+int(a[1])*60+int(a[2]))*MICRO + int(a[3].ljust(3,'0'))*1000)
         start, end = sec(vals[:4]), sec(vals[4:])
         caption = clean_caption(' '.join(lines[line_ix+1:]))
         if caption and end > start:
@@ -149,6 +149,7 @@ def cut_ends(reference: list[int], total: int, beats: list[int]) -> list[int]:
     if not reference or total <= 0:
         raise ValueError('Некорректная структура шаблона')
     lengths = [reference[0]] + [reference[i]-reference[i-1] for i in range(1,len(reference))]
+    if any(length<=0 for length in lengths):raise ValueError('Шаблон содержит неверные монтажные интервалы.')
     raw=[]
     t=0
     while t < total:
@@ -172,7 +173,9 @@ def cut_ends(reference: list[int], total: int, beats: list[int]) -> list[int]:
 
 def load_original_zip(template_path=None) -> tuple[dict,dict,dict,dict,str]:
     with zipfile.ZipFile(template_path or template_zip()) as z:
-        root = z.namelist()[0].split('/')[0]
+        roots=[p.rsplit('/',1)[0] for p in z.namelist() if p.count('/')==1 and p.endswith('/draft_content.json')]
+        if len(roots)!=1:raise ValueError('ZIP должен содержать одну папку проекта CapCut.')
+        root=roots[0]
         def read(rel): return json.loads(z.read(root+'/'+rel))
         return read('draft_content.json'), read('draft_meta_info.json'),\
                read('Timelines/project.json'), read('Timelines/'+read('draft_content.json')['id']+'/attachment_editing.json'), root
@@ -257,7 +260,7 @@ def build(audio_file: str, video_files: list[str], projects_folder: str, project
         transitions=[rid for rid in seg['extra_material_refs'] if refmap.get(rid,(None,))[0]=='transitions']
         if j==len(boundaries)-1:
             seg['extra_material_refs']=[rid for rid in seg['extra_material_refs'] if rid not in transitions]
-        elif not transitions:
+        elif not transitions and mat.get('transitions'):
             trans=copy.deepcopy(mat['transitions'][0]);trans['id']=new_id()
             mat['transitions'].append(trans)
             refmap[trans['id']]=('transitions',trans)
@@ -350,6 +353,16 @@ def build(audio_file: str, video_files: list[str], projects_folder: str, project
     meta['tm_duration']=audinfo['duration']
     # CapCut browser's media inventory must follow the new source paths.
     for grp in meta.get('draft_materials',[]):
+        if local_mode:
+            items=grp.get('value',[])
+            original_items=[item for item in items if item.get('file_Path','').replace('\\','/') in media_by_old]
+            if original_items:
+                retained=[item for item in items if item not in original_items]
+                for dst,inf in zip(referenced_videos,vinfos):
+                    item=copy.deepcopy(original_items[0]);item.update({'file_Path':dst.as_posix(),'extra_info':dst.name,'duration':inf['duration'],'width':inf['width'],'height':inf['height']})
+                    if 'id' in item:item['id']=new_id()
+                    retained.append(item)
+                grp['value']=retained
         for item in grp.get('value',[]):
             orig=item.get('file_Path','').replace('\\','/')
             if orig in media_by_old:

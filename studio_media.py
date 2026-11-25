@@ -28,7 +28,7 @@ def ffmpeg(args):
 
 class MediaLibrary:
     def __init__(self,root=None):
-        self.root=Path(root) if root else APPDATA/'studio'
+        self.root=(Path(root) if root else APPDATA/'studio').expanduser().resolve()
         self.root.mkdir(parents=True,exist_ok=True)
         for name in ('originals','clips','previews','songs'):
             (self.root/name).mkdir(exist_ok=True)
@@ -46,10 +46,13 @@ class MediaLibrary:
         return c
     def clips(self):
         with self.connect() as c:
-            return [dict(r) for r in c.execute("""SELECT clips.*,sources.name,sources.category,
+            rows=[dict(r) for r in c.execute("""SELECT clips.*,sources.name,sources.category,
             (SELECT count(*) FROM used WHERE clip_id=clips.id) AS uses,
             (SELECT max(render_id) FROM used WHERE clip_id=clips.id) AS last_use
             FROM clips JOIN sources ON sources.id=clips.source ORDER BY sources.name,idx""")]
+        for row in rows:
+            row['path']=str(self.root/row['path']);row['preview']=str(self.root/row['preview'])
+        return rows
     def enabled(self,clip_id,value):
         with self.connect() as c:c.execute('UPDATE clips SET enabled=? WHERE id=?',(int(value),clip_id))
     def import_video(self,source,category,progress=None):
@@ -84,8 +87,8 @@ class MediaLibrary:
                 shutil.move(tmp/original.name,original)
                 for key,_,i,clip,preview in rows:
                     shutil.move(tmp/(key+'.mp4'),clip);shutil.move(tmp/(key+'.jpg'),preview)
-                c.execute('INSERT INTO sources VALUES(?,?,?,?)',(digest,source.name,str(original),category))
-                c.executemany('INSERT INTO clips(id,source,idx,path,preview) VALUES(?,?,?,?,?)',rows)
+                c.execute('INSERT INTO sources VALUES(?,?,?,?)',(digest,source.name,str(original.relative_to(self.root)),category))
+                c.executemany('INSERT INTO clips(id,source,idx,path,preview) VALUES(?,?,?,?,?)',[(key,d,i,str(Path(p).relative_to(self.root)),str(Path(v).relative_to(self.root))) for key,d,i,p,v in rows])
         return len(rows)
     def choose(self,count):
         if count<=0:raise ValueError('Нет монтажных интервалов.')

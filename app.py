@@ -831,8 +831,10 @@ class ManualSongDialog(QDialog):
             'роликах с этой MP3 БЕЗ Whisper. Сохранить?')!=QMessageBox.Yes:return
         try:
             MediaLibrary(SETTINGS.get('media_root') or None).store_song(self.song)
+            existing=self.library.load(self.song)
+            title=existing.get('filename',self.song.name) if existing else self.song.name
             self.library.save(self.song,rows,verified=True,
-                              source='manual-library',display_name=self.song.name)
+                              source='manual-library',display_name=title)
         except Exception as exc:
             QMessageBox.critical(self,'Не удалось сохранить',str(exc));return
         QMessageBox.information(self,'Сохранено',f'{len(rows)} фраз в библиотеке. '
@@ -897,7 +899,10 @@ class SongLibraryDialog(QDialog):
     def use_song(self):
         path=self.selected_audio()
         if path:
-            self.parent().set_audio(str(path));self.accept()
+            self.parent().set_audio(str(path))
+            _,doc=self.entries[self.table.currentRow()]
+            self.parent().drop.title.setText(doc.get('filename',path.name))
+            self.accept()
 
     def refresh(self):
         self.entries=[]
