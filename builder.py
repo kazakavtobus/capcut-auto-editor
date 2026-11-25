@@ -170,8 +170,8 @@ def cut_ends(reference: list[int], total: int, beats: list[int]) -> list[int]:
         raw=snapped+[total]
     return raw
 
-def load_original_zip() -> tuple[dict,dict,dict,dict,str]:
-    with zipfile.ZipFile(template_zip()) as z:
+def load_original_zip(template_path=None) -> tuple[dict,dict,dict,dict,str]:
+    with zipfile.ZipFile(template_path or template_zip()) as z:
         root = z.namelist()[0].split('/')[0]
         def read(rel): return json.loads(z.read(root+'/'+rel))
         return read('draft_content.json'), read('draft_meta_info.json'),\
@@ -179,13 +179,15 @@ def load_original_zip() -> tuple[dict,dict,dict,dict,str]:
 
 def build(audio_file: str, video_files: list[str], projects_folder: str, project_name: str,
           srt_file: str = '', automatic_captions: bool = False, snap_to_beat: bool = True,
-          progress=None, beats_override=None, embed_assets: bool = True) -> tuple[Path,dict]:
+          progress=None, beats_override=None, embed_assets: bool = True,
+          local_boundaries=None, template_path=None) -> tuple[Path,dict]:
     def status(msg):
         if progress: progress(msg)
     audio=Path(audio_file).expanduser().resolve()
     videos=[Path(p).expanduser().resolve() for p in video_files]
-    if len(videos)!=3:
-        raise ValueError('Выбери ровно три видеоролика.')
+    local_mode = local_boundaries is not None
+    if not videos or (not local_mode and len(videos)!=3):
+        raise ValueError('Некорректное количество видео.')
     if not project_name.strip() or any(c in project_name for c in r'<>:"/\\|?*'):
         raise ValueError('В названии проекта запрещённые символы или оно пустое.')
     if not projects_folder:
@@ -201,15 +203,16 @@ def build(audio_file: str, video_files: list[str], projects_folder: str, project
     if audinfo['duration']>180*MICRO:
         raise ValueError('Текущая версия поддерживает песни длиной до 3 минут.')
     status('Чтение оригинального проекта...')
-    data, meta, timeline_proj, _, root=load_original_zip()
+    data, meta, timeline_proj, _, root=load_original_zip(template_path)
     old_timeline=data['id']; old_draft=meta['draft_id']; new_timeline=new_id();new_draft=new_id()
     original_clips=data['tracks'][0]['segments']
     original_vid_mats=copy.deepcopy(data['materials']['videos'])
     original_vid_sources=list(dict.fromkeys(x['path'] for x in original_vid_mats))
-    assert len(original_vid_sources)==3
-    referenced_videos=[project_folder/'AutoAssets'/f'video_{i+1:02d}.mp4' for i in range(3)] if embed_assets else videos
+    if not local_mode:
+        assert len(original_vid_sources)==3
+    referenced_videos=[project_folder/'AutoAssets'/f'video_{i+1:02d}.mp4' for i in range(len(videos))] if embed_assets else videos
     referenced_audio=(project_folder/'AutoAssets'/('song'+audio.suffix.lower())) if embed_assets else audio
-    media_by_old={src:(referenced_videos[i],vinfos[i]) for i,src in enumerate(original_vid_sources)}
+    media_by_old={src:(referenced_videos[i % len(videos)],vinfos[i % len(videos)]) for i,src in enumerate(original_vid_sources)}
     original_txt=data['tracks'][1]['segments'][0]
     text_template=copy.deepcopy(next(x for x in data['materials']['texts'] if x['id']==original_txt['material_id']))
     refmap={x['id']:(cat,x) for cat,arr in data['materials'].items() if isinstance(arr,list)
@@ -219,7 +222,9 @@ def build(audio_file: str, video_files: list[str], projects_folder: str, project
                for seg in original_clips]
     status('Поиск ритма...' if snap_to_beat else 'Подготовка видеонарезки...')
     beat_points=(beats_override if beats_override is not None else detect_beats(audio)) if snap_to_beat else []
-    boundaries=cut_ends(reference, audinfo['duration'], beat_points)
+    boundaries=list(local_boundaries) if local_mode else cut_ends(reference, audinfo['duration'], beat_points)
+    if local_mode and (len(boundaries)!=len(videos) or not boundaries or boundaries[-1]!=audinfo['duration'] or any(y<=x for x,y in zip([0]+boundaries,boundaries))):
+        raise ValueError('Неверная локальная монтажная последовательность.')
     mat=data['materials']
     expanded=[]; tstart=0
     # New objects point to original CapCut native LUT, transition and text animations.
@@ -228,12 +233,12 @@ def build(audio_file: str, video_files: list[str], projects_folder: str, project
         seg=copy.deepcopy(template_segment)
         old_vid=refmap[seg['material_id']][1]
         source_path=old_vid['path']
-        new_path, mi=media_by_old[source_path]
+        new_path, mi=(referenced_videos[j],vinfos[j]) if local_mode else media_by_old[source_path]
         nlen=tend-tstart
         if mi['duration'] < nlen:
             raise ValueError(f'Видео {new_path.name} слишком короткое для фрагмента {nlen/MICRO:.2f} с. '
                              'Возьми ролик подлиннее (желательно от 6 секунд).')
-        if j >= len(original_clips):
+        if local_mode or j >= len(original_clips):
             # Duplicate all referenced effect/material objects with fresh IDs.
             vmat=copy.deepcopy(old_vid);vmat['id']=new_id();mat['videos'].append(vmat)
             refmap[vmat['id']]=('videos',vmat)
@@ -262,13 +267,17 @@ def build(audio_file: str, video_files: list[str], projects_folder: str, project
         # Random offsets in V4 created inconsistent framing on repeated clips.
         seg['source_timerange']={'start':0,'duration':nlen}
         seg['render_timerange']={'start':0,'duration':0}
-        seg['volume']=0.0;seg['clip']['flip']['horizontal']=True
-        if j>=len(original_clips):
+        seg['volume']=0.0;seg['clip']['flip']['horizontal']=not local_mode
+        if local_mode:seg['clip']['flip']['vertical']=False
+        if local_mode or j>=len(original_clips):
             vmat['path']=new_path.as_posix();vmat['duration']=mi['duration'];
             vmat['width']=mi['width'];vmat['height']=mi['height'];vmat['has_audio']=False
             vmat['material_name']=new_path.name
         expanded.append(seg);tstart=tend
     data['tracks'][0]['segments']=expanded
+    if local_mode:
+        used_ids={s['material_id'] for s in expanded}
+        mat['videos']=[v for v in mat['videos'] if v['id'] in used_ids]
     # Update all original 8 video materials as well.
     for vmat in original_vid_mats:
         pass
@@ -366,7 +375,7 @@ def build(audio_file: str, video_files: list[str], projects_folder: str, project
             for i,src in enumerate(videos):
                 shutil.copy2(src,media_dir/referenced_videos[i].name)
         # Read specific files only; avoid zip path traversal.
-        with zipfile.ZipFile(template_zip()) as z:
+        with zipfile.ZipFile(template_path or template_zip()) as z:
             for member in z.infolist():
                 parts=Path(member.filename).parts
                 if not parts or parts[0]!=root or member.is_dir():
