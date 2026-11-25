@@ -8,11 +8,7 @@ from song_library import APPDATA, SongLibrary, song_hash, sync_previous_capcut_e
 from auto_pipeline import to_srt,unique_project_name
 from studio_media import MediaLibrary
 
-def profile_template(account):
-    if str(account)=='1':return template_zip()
-    path=APPDATA/'studio'/'account_2.zip'
-    if not path.is_file():raise FileNotFoundError('Импортируй эталонный ZIP проекта CapCut для аккаунта 2 в настройках.')
-    return path
+from studio_profiles import active_template as profile_template
 
 def bounded_cuts(reference,total,beats):
     # Each prepared file is 5 seconds. Keep the original montage rhythm.

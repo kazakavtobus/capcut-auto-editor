@@ -79,3 +79,22 @@ class StudioTests(unittest.TestCase):
             self.assertTrue(all(not s['clip']['flip']['horizontal'] for s in segments))
             self.assertEqual(info['captions'],1)
             self.assertEqual(len(list((project/'AutoAssets').glob('video_*.mp4'))),2)
+            from studio_profiles import install_template,active_template,versions,create_reference
+            profile_dir=root/'profiles'
+            install_template('1',project,profile_dir)
+            self.assertTrue(active_template('1',profile_dir).is_file())
+            original=active_template('1',profile_dir).read_bytes()
+            copy_project=create_reference('2',out,profile_dir)
+            self.assertTrue((copy_project/'draft_content.json').is_file())
+            doc=json.loads((copy_project/'draft_content.json').read_text(encoding='utf-8'))
+            text=doc['materials']['texts'][0]
+            style=json.loads(text['content'])
+            style['styles'][0]['font']={'id':'new-font','path':'local-font'}
+            text['content']=json.dumps(style)
+            (copy_project/'draft_content.json').write_text(json.dumps(doc),encoding='utf-8')
+            install_template('2',copy_project,profile_dir)
+            self.assertEqual(active_template('1',profile_dir).read_bytes(),original)
+            install_template('1',copy_project,profile_dir)
+            self.assertEqual(len(versions('1',profile_dir)),1)
+            install_template('1',versions('1',profile_dir)[0],profile_dir)
+            self.assertEqual(active_template('1',profile_dir).read_bytes(),original)

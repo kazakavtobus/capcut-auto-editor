@@ -140,3 +140,81 @@ class ProjectsDialog(QDialog):
     def open_project(self):
         i=self.table.currentRow()
         if 0<=i<len(self.rows):QDesktopServices.openUrl(QUrl.fromLocalFile(self.rows[i]['path']))
+
+
+class ProfileWorker(QThread):
+    done=Signal(object)
+    failed=Signal(str)
+    def __init__(self,account,folder):
+        super().__init__();self.account=account;self.folder=folder
+    def run(self):
+        try:
+            from studio_profiles import create_reference
+            self.done.emit(create_reference(self.account,self.folder))
+        except Exception as exc:self.failed.emit(str(exc))
+
+class ProfilesDialog(QDialog):
+    def __init__(self,parent,projects_folder):
+        super().__init__(parent)
+        self.folder=Path(projects_folder);self.worker=None
+        self.setWindowTitle('Эталоны аккаунтов');self.resize(810,500)
+        l=QVBoxLayout(self);l.setContentsMargins(24,24,24,24);l.setSpacing(12)
+        title=QLabel('Эталоны аккаунтов');title.setObjectName('heading');l.addWidget(title)
+        hint=QLabel('Создай редактируемый эталон, измени его в CapCut, сохрани и закрой редактор. Затем выбери этот проект здесь. Старые эталоны сохраняются в истории.');hint.setWordWrap(True);l.addWidget(hint)
+        self.states={};self.controls=[]
+        for account in ('1','2'):
+            row=QLabel('Аккаунт '+account);row.setObjectName('cardHeading');l.addWidget(row)
+            state=QLabel();state.setWordWrap(True);self.states[account]=state;l.addWidget(state)
+            h=QHBoxLayout()
+            for title,action,primary in [('Создать проект',self.create,True),('Из проекта CapCut',self.import_folder,False),('Из ZIP',self.import_zip,False),('История / откат',self.restore,False)]:
+                w=button(title,lambda checked=False,a=account,fn=action:fn(a),primary);h.addWidget(w);self.controls.append(w)
+            l.addLayout(h)
+        self.status=QLabel('');self.status.setWordWrap(True);l.addWidget(self.status)
+        l.addStretch();self.refresh()
+    def refresh(self):
+        from studio_profiles import active_template,versions
+        for a,w in self.states.items():
+            try:p=active_template(a);status='Активный эталон: '+p.name
+            except FileNotFoundError:status='Эталон пока не добавлен. Можно создать копию первого.'
+            w.setText(status+' · резервных версий: '+str(len(versions(a))))
+    def create(self,a):
+        if self.worker and self.worker.isRunning():return
+        for w in self.controls:w.setEnabled(False)
+        self.status.setText('Создаю отдельный эталон CapCut…')
+        self.worker=ProfileWorker(a,self.folder)
+        self.worker.done.connect(self.created);self.worker.failed.connect(self.failed);self.worker.start()
+    def created(self,p):
+        for w in self.controls:w.setEnabled(True)
+        self.status.setText('Создан: '+p.name)
+        QMessageBox.information(self,'Эталон создан','Перезапусти CapCut, открой проект «'+p.name+'», настрой стиль всех субтитров, сохрани и закрой CapCut. Затем нажми «Из проекта CapCut» для нужного аккаунта.')
+    def failed(self,msg):
+        for w in self.controls:w.setEnabled(True)
+        self.status.setText(msg);QMessageBox.warning(self,'Не удалось создать эталон',msg)
+    def install(self,a,p):
+        if not p:return
+        if QMessageBox.question(self,'Обновить эталон аккаунта '+a+'?','Сохранённый проект станет новым шаблоном. Предыдущий вариант останется в истории. Продолжить?')!=QMessageBox.Yes:return
+        try:
+            from studio_profiles import install_template
+            install_template(a,p)
+        except Exception as exc:QMessageBox.warning(self,'Не удалось импортировать',str(exc));return
+        self.refresh();self.status.setText('Аккаунт '+a+': эталон сохранён.')
+    def import_folder(self,a):
+        p=QFileDialog.getExistingDirectory(self,'Выбери папку сохранённого проекта CapCut',str(self.folder))
+        self.install(a,p)
+    def import_zip(self,a):
+        p,_=QFileDialog.getOpenFileName(self,'ZIP-шаблон CapCut','','Архив (*.zip)')
+        self.install(a,p)
+    def restore(self,a):
+        from studio_profiles import versions
+        history=versions(a)
+        if not history:QMessageBox.information(self,'История','Пока нет предыдущих эталонов.');return
+        from PySide6.QtWidgets import QInputDialog
+        names=[p.stem for p in history]
+        selected,ok=QInputDialog.getItem(self,'Версия эталона','Выбери сохранённую версию:',names,0,False)
+        if ok:self.install(a,history[names.index(selected)])
+    def reject(self):
+        if self.worker and self.worker.isRunning():return
+        super().reject()
+    def closeEvent(self,event):
+        if self.worker and self.worker.isRunning():event.ignore();return
+        super().closeEvent(event)

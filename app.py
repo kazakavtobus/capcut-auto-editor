@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 from auto_pipeline import load_settings, save_settings
 from studio_media import MediaLibrary
 from studio_pipeline import render_batch
-from studio_ui import MediaDialog, ProjectsDialog, theme_style
+from studio_ui import MediaDialog, ProjectsDialog, ProfilesDialog, theme_style
 from subtitle_editor import _project_data, apply_changes
 from diagnostics import install_crash_logger, report_exception, LOG_FILE
 from version import VERSION
@@ -1098,8 +1098,7 @@ class MainWindow(QMainWindow):
         local_template=card();lt=vertical(local_template,12,(23,20,23,20))
         lt.addWidget(label('ПРОФИЛИ АККАУНТОВ','micro'))
         lt.addWidget(label('Отдельный эталонный проект CapCut для каждого аккаунта: шрифт, позиция текста, анимации и переходы.','muted',True))
-        lt.addWidget(btn('Аккаунт 1 · Импорт шаблона','secondary',lambda:self.import_template('1')))
-        lt.addWidget(btn('Аккаунт 2 · Импорт шаблона','secondary',lambda:self.import_template('2')))
+        lt.addWidget(btn('Управление эталонами','primary',self.open_profiles))
         l.addWidget(local_template)
         storage=card();sl=vertical(storage,10,(23,20,23,20))
         sl.addWidget(label('ЛОКАЛЬНОЕ ХРАНИЛИЩЕ','micro'))
@@ -1193,6 +1192,10 @@ class MainWindow(QMainWindow):
         if not Path(SETTINGS.get('projects_folder','')).is_dir():
             self.note('Укажи путь к проектам CapCut в настройках (один раз).')
             self.change_page(1)
+
+    def open_profiles(self):
+        if self.worker and self.worker.isRunning():return
+        ProfilesDialog(self,self.folder.text().strip()).exec()
 
     def import_template(self,account='1'):
         filename,_=QFileDialog.getOpenFileName(self,'ZIP проекта CapCut для аккаунта '+account,'',

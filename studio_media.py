@@ -6,6 +6,7 @@ import os
 import random
 import shutil
 import sqlite3
+from contextlib import contextmanager
 import subprocess
 import sys
 import tempfile
@@ -40,10 +41,15 @@ class MediaLibrary:
             CREATE TABLE IF NOT EXISTS renders(id INTEGER PRIMARY KEY AUTOINCREMENT,account TEXT,path TEXT UNIQUE,created REAL,sequence TEXT UNIQUE, song TEXT);
             CREATE TABLE IF NOT EXISTS used(render_id INTEGER,clip_id TEXT,position INTEGER,PRIMARY KEY(render_id,position));
             """)
+    @contextmanager
     def connect(self):
         c=sqlite3.connect(self.db,timeout=20)
         c.row_factory=sqlite3.Row
-        return c
+        try:
+            with c:
+                yield c
+        finally:
+            c.close()
     def clips(self):
         with self.connect() as c:
             rows=[dict(r) for r in c.execute("""SELECT clips.*,sources.name,sources.category,

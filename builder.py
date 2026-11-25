@@ -394,7 +394,7 @@ def build(audio_file: str, video_files: list[str], projects_folder: str, project
                 if not parts or parts[0]!=root or member.is_dir():
                     continue
                 rel=Path(*parts[1:]);
-                if not rel.parts or any(part=='..' for part in rel.parts):
+                if not rel.parts or rel.parts[0]=='AutoAssets' or any(part=='..' or ':' in part for part in rel.parts) or rel.is_absolute():
                     continue
                 rel=Path(*[new_timeline if part==old_timeline else part for part in rel.parts])
                 dest=workfolder/rel;dest.parent.mkdir(parents=True,exist_ok=True)
