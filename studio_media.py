@@ -61,6 +61,43 @@ class MediaLibrary:
         return rows
     def enabled(self,clip_id,value):
         with self.connect() as c:c.execute('UPDATE clips SET enabled=? WHERE id=?',(int(value),clip_id))
+    def rename_source(self,source_id,name):
+        name=name.strip()
+        if not name or len(name)>120:raise ValueError('Укажи название до 120 символов.')
+        with self.connect() as c:
+            c.execute('UPDATE sources SET name=? WHERE id=?',(name,source_id))
+
+    def remove_media(self,clip_id,whole_source=False):
+        """Remove from active library; keep history and move only owned files to trash."""
+        import uuid
+        moved=[]
+        trash=self.root/'trash'/uuid.uuid4().hex
+        try:
+            with self.connect() as c:
+                c.execute('BEGIN IMMEDIATE')
+                row=c.execute('SELECT * FROM clips WHERE id=?',(clip_id,)).fetchone()
+                if not row:raise ValueError('Фрагмент уже удалён.')
+                sid=row['source']
+                clips=c.execute('SELECT * FROM clips WHERE source=?',(sid,)).fetchall() if whole_source else [row]
+                targets=[(r[k],folder) for r in clips for k,folder in (('path','clips'),('preview','previews'))]
+                if whole_source:
+                    src=c.execute('SELECT path FROM sources WHERE id=?',(sid,)).fetchone()
+                    if src:targets.append((src['path'],'originals'))
+                for value,folder in targets:
+                    p=(self.root/value).resolve()
+                    owned=(self.root/folder).resolve()
+                    if not p.is_relative_to(owned):raise ValueError('Файл находится вне управляемой медиатеки.')
+                    if p.is_file():
+                        dest=trash/folder/p.name
+                        dest.parent.mkdir(parents=True,exist_ok=True)
+                        shutil.move(p,dest);moved.append((p,dest))
+                c.executemany('DELETE FROM clips WHERE id=?',[(r['id'],) for r in clips])
+                if whole_source:c.execute('DELETE FROM sources WHERE id=?',(sid,))
+        except Exception:
+            for p,dest in reversed(moved):
+                if dest.exists():shutil.move(dest,p)
+            raise
+
     def import_video(self,source,category,progress=None):
         from builder import media_info
         say=progress or (lambda x:None)
