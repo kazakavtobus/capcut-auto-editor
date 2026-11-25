@@ -11,7 +11,36 @@ on:
 permissions:
   contents: write
 jobs:
+  repair-v813:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore missing checksum for the already published installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=v8.1.3
+          release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")
+          if jq -e '.assets[] | select(.name == "CapCutAutoEditor_Setup.exe.sha256" and .state == "uploaded")' <<< "$release" >/dev/null; then
+            echo "Checksum already exists; not replacing anything."
+            exit 0
+          fi
+          digest=$(jq -er '.assets[] | select(.name == "CapCutAutoEditor_Setup.exe" and .state == "uploaded") | .digest' <<< "$release")
+          if [[ "$digest" != "sha256:3f2840c6b9a8452a395d07b1ac56466399706469c0396d1596fe6272dff09b37" ]]; then
+            echo "Unexpected installer digest; refusing repair"
+            exit 1
+          fi
+          printf '%s  CapCutAutoEditor_Setup.exe\n' "${digest#sha256:}" > CapCutAutoEditor_Setup.exe.sha256
+          gh release upload "$tag" CapCutAutoEditor_Setup.exe.sha256 --repo "$GITHUB_REPOSITORY"
+          mkdir verify
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern 'CapCutAutoEditor_Setup.exe.sha256' --dir verify
+          cmp CapCutAutoEditor_Setup.exe.sha256 verify/CapCutAutoEditor_Setup.exe.sha256
+          echo 'Published checksum verified.'
   windows-build:
+    needs: repair-v813
+    if: always() && (needs.repair-v813.result == 'success' || needs.repair-v813.result == 'skipped')
     runs-on: windows-latest
     timeout-minutes: 95
     steps:
@@ -150,12 +179,31 @@ jobs:
         run: |
           $version = python -c "from version import VERSION; print(VERSION)"
           $tag = "v$version"
+          $installer = 'dist/release/CapCutAutoEditor_Setup.exe'
+          $checksum = "$installer.sha256"
+          $localHash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ((Get-Content $checksum -Raw).Trim() -notmatch "^$localHash ") { throw 'Local checksum mismatch' }
           gh release view $tag *> $null
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release $tag already exists. Will not replace an installed update."
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --draft --target "${{ github.sha }}" --generate-notes --title "CapCut Auto Editor $tag"
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot create draft release' }
+          }
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or !$release) { throw 'Cannot inspect release' }
+          if ($release.draft) {
+            gh release upload $tag $installer $checksum --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Release upload failed' }
+            $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect uploaded assets' }
+            $exe = @($release.assets | Where-Object { $_.name -eq 'CapCutAutoEditor_Setup.exe' -and $_.state -eq 'uploaded' })
+            $sum = @($release.assets | Where-Object { $_.name -eq 'CapCutAutoEditor_Setup.exe.sha256' -and $_.state -eq 'uploaded' })
+            if ($exe.Count -ne 1 -or $sum.Count -ne 1 -or $exe[0].digest -ne "sha256:$localHash") { throw 'Incomplete release or installer digest mismatch' }
+            $sumHash = (Get-FileHash $checksum -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($sum[0].digest -ne "sha256:$sumHash") { throw 'Uploaded checksum digest mismatch' }
+            gh release edit $tag --draft=false
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot publish verified draft' }
           } else {
-            gh release create $tag `
-              'dist/release/CapCutAutoEditor_Setup.exe' `
-              'dist/release/CapCutAutoEditor_Setup.exe.sha256' `
-              --target "${{ github.sha }}" --generate-notes --title "CapCut Auto Editor $tag"
+            $names = @($release.assets | Where-Object { $_.state -eq 'uploaded' } | ForEach-Object { $_.name })
+            if ('CapCutAutoEditor_Setup.exe' -notin $names -or 'CapCutAutoEditor_Setup.exe.sha256' -notin $names) { throw 'Existing public release is incomplete; repair without replacing installer' }
+            Write-Host "Release $tag already exists with both assets. Not replacing installer."
           }
