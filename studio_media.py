@@ -41,6 +41,8 @@ class MediaLibrary:
             CREATE TABLE IF NOT EXISTS renders(id INTEGER PRIMARY KEY AUTOINCREMENT,account TEXT,path TEXT UNIQUE,created REAL,sequence TEXT UNIQUE, song TEXT);
             CREATE TABLE IF NOT EXISTS used(render_id INTEGER,clip_id TEXT,position INTEGER,PRIMARY KEY(render_id,position));
             """)
+            if not any(r[1]=="duration_us" for r in c.execute("PRAGMA table_info(clips)")):
+                c.execute("ALTER TABLE clips ADD COLUMN duration_us INTEGER NOT NULL DEFAULT 5000000")
     @contextmanager
     def connect(self):
         c=sqlite3.connect(self.db,timeout=20)
@@ -107,8 +109,10 @@ class MediaLibrary:
         with self.connect() as c:
             if c.execute('SELECT 1 FROM sources WHERE id=?',(digest,)).fetchone():return 0
         duration=media_info(source,'video')['duration']
-        count=duration//LENGTH
-        if not count:raise ValueError('Исходник должен быть не короче 5 секунд.')
+        if duration<=0:raise ValueError('Не удалось определить длительность видео.')
+        count=max(1,math.ceil(duration/LENGTH))
+        # Keep short originals; ignore only sub-frame remnants of long files.
+        if count>1 and duration-(count-1)*LENGTH<100_000:count-=1
         original=self.root/'originals'/(digest+source.suffix.lower())
         rows=[]
         with tempfile.TemporaryDirectory(dir=self.root) as tmp:
@@ -118,33 +122,43 @@ class MediaLibrary:
                 say(f'{source.name}: фрагмент {i+1}/{count}')
                 key=f'{digest}-{i:05d}'
                 clip=tmp/(key+'.mp4'); preview=tmp/(key+'.jpg')
-                ffmpeg(['-ss',str(i*5),'-i',source,'-t','5','-map','0:v:0','-an',
+                seconds=min(5,(duration-i*LENGTH)/1_000_000)
+                ffmpeg(['-ss',str(i*5),'-i',source,'-t',str(seconds),'-map','0:v:0','-an',
                     '-vf','scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=30,hue=s=0,format=yuv420p',
                     '-c:v','libx264','-crf','19','-preset','veryfast','-movflags','+faststart',clip])
-                if media_info(clip,'video')['duration']<4_950_000:raise RuntimeError('Не удалось получить полный пятисекундный фрагмент.')
-                ffmpeg(['-ss','1','-i',clip,'-frames:v','1','-vf','scale=180:-1',preview])
-                rows.append((key,digest,i,str(self.root/'clips'/clip.name),str(self.root/'previews'/preview.name)))
+                actual=media_info(clip,'video')['duration']
+                if actual<=0:raise RuntimeError('Пустой фрагмент.')
+                ffmpeg(['-ss',str(min(1,actual/2_000_000)),'-i',clip,'-frames:v','1','-vf','scale=180:-1',preview])
+                if not preview.is_file():ffmpeg(['-i',clip,'-frames:v','1','-vf','scale=180:-1',preview])
+                if not preview.is_file():raise RuntimeError('Не удалось получить кадр видео.')
+                rows.append((key,digest,i,str(self.root/'clips'/clip.name),str(self.root/'previews'/preview.name),actual))
             with self.connect() as c:
                 c.execute('BEGIN IMMEDIATE')
                 if c.execute('SELECT 1 FROM sources WHERE id=?',(digest,)).fetchone():return 0
                 shutil.move(tmp/original.name,original)
-                for key,_,i,clip,preview in rows:
+                for key,_,i,clip,preview,_duration in rows:
                     shutil.move(tmp/(key+'.mp4'),clip);shutil.move(tmp/(key+'.jpg'),preview)
                 c.execute('INSERT INTO sources VALUES(?,?,?,?)',(digest,source.name,str(original.relative_to(self.root)),category))
-                c.executemany('INSERT INTO clips(id,source,idx,path,preview) VALUES(?,?,?,?,?)',[(key,d,i,str(Path(p).relative_to(self.root)),str(Path(v).relative_to(self.root))) for key,d,i,p,v in rows])
+                c.executemany('INSERT INTO clips(id,source,idx,path,preview,duration_us) VALUES(?,?,?,?,?,?)',[(key,d,i,str(Path(p).relative_to(self.root)),str(Path(v).relative_to(self.root)),length) for key,d,i,p,v,length in rows])
         return len(rows)
-    def choose(self,count):
+    def choose(self,count,distinct_sources=False):
         if count<=0:raise ValueError('Нет монтажных интервалов.')
         with self.connect() as c:
             recent={r[0] for r in c.execute('SELECT clip_id FROM used WHERE render_id IN (SELECT id FROM renders ORDER BY id DESC LIMIT ?)',(RECENT,))}
             sequences={r[0] for r in c.execute('SELECT sequence FROM renders')}
         available=[r for r in self.clips() if r['enabled'] and r['id'] not in recent and Path(r['path']).is_file()]
         if len(available)<count:raise LibraryShortage(f'Нужно {count} свежих фрагментов, доступно {len(available)}. Пополни базу: повторы в последних 4 проектах запрещены.')
+        if distinct_sources and len({r['source'] for r in available})<count:
+            raise LibraryShortage(f'Нужно {count} разных исходных видео со свежими фрагментами.')
         rng=random.SystemRandom()
         for attempt in range(80):
             pool=available.copy();result=[]
             for i in range(count):
-                options=[r for r in pool if not result or r['source']!=result[-1]['source']]
+                if distinct_sources:
+                    used_sources={r['source'] for r in result}
+                    options=[r for r in pool if r['source'] not in used_sources]
+                else:
+                    options=[r for r in pool if not result or r['source']!=result[-1]['source']]
                 if not options:break
                 options.sort(key=lambda r:(r['uses'],r['last_use'] or 0,rng.random()))
                 best=options[0];result.append(best);pool.remove(best)

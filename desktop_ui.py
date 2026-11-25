@@ -150,7 +150,9 @@ class ProjectCount(QWidget):
 class AssetDelegate(QStyledItemDelegate):
     def __init__(self,parent=None):
         super().__init__(parent);self.cache={}
-    def sizeHint(self,option,index):return QSize(178,353)
+    def sizeHint(self,option,index):
+        grid=self.parent()
+        return grid.gridSize() if grid is not None else QSize(178,353)
     def paint(self,p,option,index):
         r=option.rect.adjusted(5,5,-5,-5);data=index.data(Qt.UserRole) or {}
         selected=bool(option.state&QStyle.State_Selected)
@@ -182,7 +184,7 @@ class AssetDelegate(QStyledItemDelegate):
         title=f"{Path(data.get('name','')).stem or 'Видео'} · {int(data.get('idx',0))+1:02d}"
         p.drawText(QRect(r.x()+10,footer,r.width()-20,20),Qt.AlignVCenter,p.fontMetrics().elidedText(title,Qt.ElideRight,r.width()-20))
         font.setBold(False);font.setPixelSize(12);p.setFont(font);p.setPen(QColor(c['muted']))
-        p.drawText(QRect(r.x()+10,footer+21,r.width()-20,18),Qt.AlignVCenter,f"{data.get('category','')} · 5 сек")
+        p.drawText(QRect(r.x()+10,footer+21,r.width()-20,18),Qt.AlignVCenter,f"{data.get('category','')} · {data.get('duration_us',5000000)/1000000:g} сек")
         status=('Активен' if data.get('enabled') else 'Исключён')+f" · {data.get('uses',0)} исп."
         p.drawText(QRect(r.x()+10,footer+40,r.width()-20,17),Qt.AlignVCenter,p.fontMetrics().elidedText(status,Qt.ElideRight,r.width()-20))
         p.restore()
@@ -218,7 +220,7 @@ class MediaPage(QWidget):
         controls.addWidget(label('Импорт как:','muted'));controls.addWidget(self.category,1);l.addLayout(controls)
         self.grid=AssetGrid();self.grid.setObjectName('assets');self.grid.setItemDelegate(AssetDelegate(self.grid))
         self.grid.setSelectionMode(QListWidget.SingleSelection);self.grid.itemDoubleClicked.connect(lambda _:self.preview());l.addWidget(self.grid,1)
-        self.empty=label('Медиатека пуста. Добавь свои исходники, чтобы создать пятисекундные ЧБ-фрагменты.','muted');self.empty.setWordWrap(True);l.addWidget(self.empty)
+        self.empty=label('Медиатека пуста. Добавь свои исходники, чтобы создать ЧБ-фрагменты до пяти секунд.','muted');self.empty.setWordWrap(True);l.addWidget(self.empty)
         actions=QHBoxLayout()
         for title,fn in [('Просмотр',self.preview),('Переименовать исходник',self.rename),('Вкл. / исключить',self.toggle),('Удалить…',self.delete)]:
             actions.addWidget(button(title,fn))

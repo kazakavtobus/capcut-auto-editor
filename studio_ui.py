@@ -128,15 +128,16 @@ class MediaDialog(QDialog):
         super().closeEvent(event)
 
 class ProjectsDialog(QDialog):
-    def __init__(self,parent,root=None):
+    def __init__(self,parent,root=None,settings=None):
         super().__init__(parent);self.setWindowTitle('Проекты');self.resize(870,500)
         l=QVBoxLayout(self);l.addWidget(QLabel('История локальных монтажей'))
+        from account_names import account_name
         self.rows=MediaLibrary(root or None).projects()
         self.table=QTableWidget(len(self.rows),3);self.table.setHorizontalHeaderLabels(['ПРОЕКТ','АККАУНТ','ПУТЬ'])
         self.table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows);self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         for i,r in enumerate(self.rows):
-            for j,t in enumerate((Path(r['path']).name,r['account'],r['path'])):self.table.setItem(i,j,QTableWidgetItem(str(t)))
+            for j,t in enumerate((Path(r['path']).name,account_name(settings or {},r['account']),r['path'])):self.table.setItem(i,j,QTableWidgetItem(str(t)))
         l.addWidget(self.table,1);l.addWidget(button('Открыть папку проекта',self.open_project,True))
     def open_project(self):
         i=self.table.currentRow()
@@ -156,16 +157,17 @@ class ProfileWorker(QThread):
 
 class ProfilesDialog(QDialog):
     task=Signal(str,object)
-    def __init__(self,parent,projects_folder):
+    def __init__(self,parent,projects_folder,settings=None):
         super().__init__(parent)
         self.folder=Path(projects_folder);self.worker=None
         self.setWindowTitle('Эталоны аккаунтов');self.resize(810,500)
         l=QVBoxLayout(self);l.setContentsMargins(24,24,24,24);l.setSpacing(12)
         title=QLabel('Эталоны аккаунтов');title.setObjectName('heading');l.addWidget(title)
         hint=QLabel('Создай редактируемый эталон, измени его в CapCut, сохрани и закрой редактор. Затем выбери этот проект здесь. Старые эталоны сохраняются в истории.');hint.setWordWrap(True);l.addWidget(hint)
-        self.states={};self.controls=[]
+        self.states={};self.controls=[];self.titles={};self.names=dict(settings or {})
         for account in ('1','2'):
-            row=QLabel('Аккаунт '+account);row.setObjectName('cardHeading');l.addWidget(row)
+            from account_names import account_name
+            row=QLabel(account_name(self.names,account));row.setWordWrap(True);row.setObjectName('cardHeading');self.titles[account]=row;l.addWidget(row)
             state=QLabel();state.setWordWrap(True);self.states[account]=state;l.addWidget(state)
             h=QHBoxLayout()
             for title,action,primary in [('Создать проект',self.create,True),('Из проекта CapCut',self.import_folder,False),('Из ZIP',self.import_zip,False),('История / откат',self.restore,False)]:
@@ -173,6 +175,11 @@ class ProfilesDialog(QDialog):
             l.addLayout(h)
         self.status=QLabel('');self.status.setWordWrap(True);l.addWidget(self.status)
         l.addStretch();self.refresh()
+    def set_names(self,settings):
+        from account_names import account_name
+        self.names=dict(settings)
+        for key,w in self.titles.items():w.setText(account_name(self.names,key))
+
     def refresh(self):
         from studio_profiles import active_template,versions
         for a,w in self.states.items():
@@ -184,7 +191,7 @@ class ProfilesDialog(QDialog):
         if (self.worker and self.worker.isRunning()) or (hasattr(host,'busy') and host.busy()):return
         for w in self.controls:w.setEnabled(False)
         self.status.setText('Создаю отдельный эталон CapCut…')
-        self.task.emit('Создание эталона '+a,None)
+        self.task.emit('Создание эталона · '+self.titles[a].text(),None)
         self.worker=ProfileWorker(a,self.folder)
         self.worker.done.connect(self.created);self.worker.failed.connect(self.failed);self.worker.start()
     def created(self,p):
@@ -203,7 +210,7 @@ class ProfilesDialog(QDialog):
             from studio_profiles import install_template
             install_template(a,p)
         except Exception as exc:QMessageBox.warning(self,'Не удалось импортировать',str(exc));return
-        self.refresh();self.status.setText('Аккаунт '+a+': эталон сохранён.')
+        self.refresh();self.status.setText(self.titles[a].text()+': эталон сохранён.')
     def import_folder(self,a):
         p=QFileDialog.getExistingDirectory(self,'Выбери папку сохранённого проекта CapCut',str(self.folder))
         self.install(a,p)

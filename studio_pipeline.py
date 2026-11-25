@@ -6,7 +6,8 @@ from builder import build,media_info,detect_beats,cut_ends,load_original_zip,tem
 from caption_engine import obtain_captions
 from song_library import APPDATA, SongLibrary, song_hash, sync_previous_capcut_edits
 from auto_pipeline import to_srt,unique_project_name
-from studio_media import MediaLibrary
+from studio_media import MediaLibrary,ffmpeg
+from account_names import account_name
 
 from studio_profiles import active_template as profile_template
 
@@ -19,6 +20,29 @@ def bounded_cuts(reference,total,beats):
             prev+=4_950_000;result.append(prev)
         if end>prev:result.append(end);prev=end
     return result
+
+def cycle_cuts(reference,total,beats):
+    result=bounded_cuts(reference,total,beats)
+    if total<180_000:raise ValueError('Слишком короткая песня для трёх фрагментов.')
+    while len(result)<3:
+        left,right=max(zip([0]+result,result),key=lambda x:x[1]-x[0])
+        result.append((left+right)//2);result.sort()
+    return result
+
+def prepare_cycle_files(clips,folder,progress=None):
+    """Keep stored clips unchanged; extend short clips only for this draft."""
+    paths=[]
+    for i,row in enumerate(clips):
+        p=Path(row['path'])
+        if media_info(p,'video')['duration']<4_950_000:
+            dest=Path(folder)/f'loop_{i}.mp4'
+            if progress:progress('Подготовка короткого футажа: '+p.name)
+            ffmpeg(['-stream_loop','-1','-i',p,'-t','5','-map','0:v:0','-an',
+                    '-c:v','libx264','-preset','veryfast','-crf','19','-pix_fmt','yuv420p',dest])
+            if media_info(dest,'video')['duration']<4_950_000:raise ValueError('Не удалось зациклить короткий футаж.')
+            p=dest
+        paths.append(str(p))
+    return paths
 
 def render_batch(audio,settings,counts,progress=None,library=None):
     say=progress or (lambda x:None)
@@ -43,23 +67,25 @@ def render_batch(audio,settings,counts,progress=None,library=None):
     for account,template in templates.items():
         data=load_original_zip(template)[0]
         reference=[s['target_timerange']['start']+s['target_timerange']['duration'] for s in data['tracks'][0]['segments']]
-        plans[account]=bounded_cuts(reference,duration,beats)
+        plans[account]=cycle_cuts(reference,duration,beats)
     projects=[];last_info={}
     with tempfile.TemporaryDirectory() as tmp:
         srt=Path(tmp)/'lyrics.srt';to_srt(rows,srt)
         for account,n in counts.items():
             for _ in range(n):
-                say(f'Проект {len(projects)+1}/{total} · аккаунт {account}')
+                label=account_name(settings,account)
+                say(f'Проект {len(projects)+1}/{total} · {label}')
                 bounds=plans[account]
-                try:clips=lib.choose(len(bounds))
+                try:clips=lib.choose(3,distinct_sources=True)
                 except ValueError as exc:raise ValueError(f'Уже создано {len(projects)} из {total} проектов. '+str(exc)) from exc
-                name=unique_project_name(folder,Path(f'Аккаунт {account} — {title}.mp3'))
-                project,info=build(str(audio),[r['path'] for r in clips],str(folder),name,
+                name=unique_project_name(folder,Path(f'{label} — {title}.mp3'.replace('/', ' ').replace('\\',' ')))
+                paths=prepare_cycle_files(clips,tmp,say)
+                project,info=build(str(audio),paths,str(folder),name,
                     srt_file=str(srt),beats_override=beats,embed_assets=True,
-                    local_boundaries=bounds,template_path=templates[account],progress=say)
+                    local_boundaries=bounds,template_path=templates[account],progress=say,local_cycle=True)
                 assets=project/'AutoAssets'
                 to_srt(rows,assets/'lyrics.srt')
-                (assets/'sources.json').write_text(json.dumps({'provider':'local','account':account,'clips':[r['id'] for r in clips]},ensure_ascii=False),encoding='utf-8')
+                (assets/'sources.json').write_text(json.dumps({'provider':'local','account':account,'account_name':label,'clips':[r['id'] for r in clips],'sequence':[clips[i%3]['id'] for i in range(len(bounds))]},ensure_ascii=False),encoding='utf-8')
                 lib.record(account,project,clips,song_hash(audio))
                 projects.append(str(project));last_info=info
                 say(f'Готово проектов: {len(projects)}/{total}')

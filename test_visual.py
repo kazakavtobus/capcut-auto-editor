@@ -82,6 +82,7 @@ class VisualTests(unittest.TestCase):
                         grid=w.media_page.grid
                         self.assertEqual(grid.count(),6)
                         grid.clearSelection();self.settle()
+                        grid.scrollToItem(grid.item(0),grid.PositionAtTop);self.settle()
                         rect=grid.visualItemRect(grid.item(0));im=grid.viewport().grab().toImage()
                         dpr=im.devicePixelRatio()
                         def sample(x,y):return rgb(im.pixelColor(round(x*dpr),round(y*dpr)))
@@ -89,14 +90,24 @@ class VisualTests(unittest.TestCase):
                         for x in (rect.left()+22,rect.right()-22):
                             self.assertTrue(near(sample(x,rect.top()+55),(153,153,153),25),(theme,width,rect))
                         r=rect.adjusted(5,5,-5,-5)
-                        footer=sample(r.left()+5,r.bottom()-14)
+                        # Paint the whole card offscreen: the footer can be below the viewport at compact heights.
+                        from PySide6.QtGui import QPainter
+                        from PySide6.QtWidgets import QStyleOptionViewItem,QStyle
+                        from PySide6.QtCore import QRect
+                        def rendered_footer(selected=False):
+                            card=QImage(rect.width(),rect.height(),QImage.Format_RGB32);card.fill(QColor('#ff00ff'))
+                            opt=QStyleOptionViewItem();opt.rect=QRect(0,0,rect.width(),rect.height());opt.font=grid.font();opt.palette=grid.palette()
+                            opt.state=QStyle.State_Selected if selected else QStyle.State_None
+                            painter=QPainter(card);grid.itemDelegate().paint(painter,opt,grid.indexFromItem(grid.item(0)));painter.end()
+                            return rgb(card.pixelColor(10,rect.height()-19))
+                        footer=rendered_footer()
                         self.assertTrue(near(footer,rgb(QColor(asset_colors(dark)['surface'])),25),(theme,width,footer))
                         grid.setCurrentRow(0);self.settle()
                         self.assertTrue(grid.item(0).isSelected())
                         grid.viewport().grab().save(str(self.out/f'{theme}-{width}-selected.png'))
                         rect=grid.visualItemRect(grid.item(0)).adjusted(5,5,-5,-5)
                         selected=grid.viewport().grab().toImage()
-                        footer=rgb(selected.pixelColor(round((rect.left()+5)*selected.devicePixelRatio()),round((rect.bottom()-14)*selected.devicePixelRatio())))
+                        footer=rendered_footer(True)
                         self.assertTrue(near(footer,rgb(QColor(asset_colors(dark,True)['surface'])),25),(theme,width,footer))
                         # Search and empty state must also render correctly.
                         w.media_page.search.setText('не существует');self.settle()

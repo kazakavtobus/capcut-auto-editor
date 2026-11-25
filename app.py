@@ -32,6 +32,7 @@ from studio_pipeline import render_batch
 from studio_ui import MediaDialog, ProjectsDialog, ProfilesDialog, theme_style
 from desktop_ui import MediaPage, SongsPage, Ring, ProjectCount, icon, apply_appearance, panel
 from composition_preview import CompositionPreview
+from account_names import account_name,validate_account_name
 from subtitle_editor import _project_data, apply_changes
 from diagnostics import install_crash_logger, report_exception, LOG_FILE
 from version import VERSION
@@ -1021,9 +1022,9 @@ class MainWindow(QMainWindow):
         h=horizontal();h.addWidget(label('Песня','cardHeading'));h.addStretch();h.addWidget(btn('Из библиотеки','secondary',self.open_library));upl.addLayout(h)
         self.drop=DropZone();self.drop.chosen.connect(self.set_audio);upl.addWidget(self.drop)
         self.file_name=label('Песня ещё не выбрана','muted',True);upl.addWidget(self.file_name);l.addWidget(upload)
-        profiles=horizontal(space=12);self.counts={};self.profile_status={}
+        profiles=horizontal(space=12);self.counts={};self.profile_status={};self.account_titles={}
         for a in ('1','2'):
-            c=panel();pl=vertical(c,9,(20,18,20,18));pl.addWidget(label('Аккаунт '+a,'cardHeading'))
+            c=panel();pl=vertical(c,9,(20,18,20,18));title=label(account_name(SETTINGS,a),'cardHeading',True);self.account_titles[a]=title;pl.addWidget(title)
             st=label('Проверка эталона…','muted',True);self.profile_status[a]=st;pl.addWidget(st)
             h=horizontal(space=8);h.addWidget(label('Роликов','muted'));h.addStretch()
             n=ProjectCount(1 if a=='1' else 0);self.counts[a]=n
@@ -1057,6 +1058,7 @@ class MainWindow(QMainWindow):
         except Exception:self.asset_metric.setText('—')
         from studio_profiles import active_template
         for a,w in self.profile_status.items():
+            self.account_titles[a].setText(account_name(SETTINGS,a))
             try:active_template(a);w.setText('Эталон подключён')
             except FileNotFoundError:w.setText('Нужно добавить эталон')
         self.update_build_label()
@@ -1130,6 +1132,10 @@ class MainWindow(QMainWindow):
         self.theme.currentIndexChanged.connect(self.apply_theme);a.addWidget(self.theme);l.addWidget(appearance)
         local_template=card();lt=vertical(local_template,12,(23,20,23,20))
         lt.addWidget(label('ПРОФИЛИ АККАУНТОВ','micro'))
+        self.account_inputs={}
+        for key in ('1','2'):
+            lt.addWidget(label('Название аккаунта '+key,'muted'))
+            field=QLineEdit(account_name(SETTINGS,key));field.setMaxLength(40);self.account_inputs[key]=field;lt.addWidget(field)
         lt.addWidget(label('Отдельный эталонный проект CapCut для каждого аккаунта: шрифт, позиция текста, анимации и переходы.','muted',True))
         lt.addWidget(btn('Управление эталонами','primary',self.open_profiles))
         l.addWidget(local_template)
@@ -1223,11 +1229,11 @@ class MainWindow(QMainWindow):
                 self.subtitle_page=self.embed(5,SubtitleDialog(self,self.last_project))
         elif index==6:
             if self.profiles_page is None:
-                self.profiles_page=self.embed(6,ProfilesDialog(self,self.folder.text().strip()))
+                self.profiles_page=self.embed(6,ProfilesDialog(self,self.folder.text().strip(),SETTINGS))
                 self.profiles_page.task.connect(self.set_task)
             else:self.profiles_page.refresh()
         elif index==7:
-            self.projects_page=self.embed(7,ProjectsDialog(self,SETTINGS.get('media_root')))
+            self.projects_page=self.embed(7,ProjectsDialog(self,SETTINGS.get('media_root'),SETTINGS))
         self.pages.setCurrentIndex(index)
         self.breadcrumb.setText(self.TITLES[index])
         for i,b in self.nav.items():b.setChecked(i==index)
@@ -1290,7 +1296,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self,'Папка не найдена','Выбери существующую папку проектов CapCut.');return False
         if self.busy():
             QMessageBox.warning(self,'Занято','Сначала заверши обработку.');return False
+        try:names={a:validate_account_name(f.text()) for a,f in self.account_inputs.items()}
+        except ValueError as exc:QMessageBox.warning(self,'Аккаунты',str(exc));return False
         previous_root=SETTINGS.get('media_root','')
+        for a,name in names.items():SETTINGS['account_'+a+'_name']=name
         SETTINGS.update({'provider':'local','api_key':'','projects_folder':p,
                          'media_root':self.media_root.text().strip(),'theme':'dark' if self.theme.currentIndex() else 'light',
                          'whisper_model':self.model.currentText(),
@@ -1300,7 +1309,8 @@ class MainWindow(QMainWindow):
             for index in (3,4):
                 old=self.pages.widget(index);self.pages.removeWidget(old);self.pages.insertWidget(index,QWidget());old.deleteLater()
             self.media_page=None;self.songs_page=None
-        if self.profiles_page:self.profiles_page.folder=Path(p)
+        if self.profiles_page:
+            self.profiles_page.folder=Path(p);self.profiles_page.set_names(SETTINGS)
         self.note('Настройки сохранены.')
         self.change_page(0)
         return True

@@ -41,7 +41,7 @@ class StudioTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);lib=MediaLibrary(root/'база')
             raw=root/'исходник.mp4'
-            ffmpeg(['-f','lavfi','-i','testsrc2=size=160x240:rate=30:duration=10.2','-c:v','libx264','-pix_fmt','yuv420p',raw])
+            ffmpeg(['-f','lavfi','-i','testsrc2=size=160x240:rate=30:duration=10','-c:v','libx264','-pix_fmt','yuv420p',raw])
             self.assertEqual(lib.import_video(raw,'Город'),2)
             self.assertEqual(lib.import_video(raw,'Город'),0)
             clips=lib.clips()
@@ -79,6 +79,16 @@ class StudioTests(unittest.TestCase):
             self.assertTrue(all(not s['clip']['flip']['horizontal'] for s in segments))
             self.assertEqual(info['captions'],1)
             self.assertEqual(len(list((project/'AutoAssets').glob('video_*.mp4'))),2)
+            third=root/'third.mp4'
+            import shutil
+            shutil.copy2(clips[0]['path'],third)
+            boundaries=[1_000_000,2_000_000,3_000_000,4_000_000,5_000_000,dur]
+            cyc,_=build(str(audio),[clips[0]['path'],clips[1]['path'],str(third)],str(out),'cycle',
+                srt_file=str(srt),beats_override=[],local_boundaries=boundaries,template_path=template,local_cycle=True)
+            cycle=json.loads((cyc/'draft_content.json').read_text(encoding='utf-8'))
+            ids=[s['material_id'] for s in cycle['tracks'][0]['segments']]
+            self.assertEqual(len(set(ids)),3);self.assertEqual(ids[:3],ids[3:])
+            self.assertEqual(len(list((cyc/'AutoAssets').glob('video_*.mp4'))),3)
             from studio_profiles import install_template,active_template,versions,create_reference
             profile_dir=root/'profiles'
             install_template('1',project,profile_dir)
@@ -117,3 +127,28 @@ class StudioTests(unittest.TestCase):
             self.assertEqual(len(lib.projects()),1)
             self.assertFalse(source.exists());self.assertFalse(clip.exists())
             self.assertEqual(len(list((lib.root/'trash').rglob('*.mp4'))),2)
+
+
+    def test_short_source_loop(self):
+        from studio_media import ffmpeg
+        from studio_pipeline import prepare_cycle_files,cycle_cuts
+        from builder import media_info
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);lib=MediaLibrary(root/'lib')
+            for i in range(3):
+                p=root/f'short{i}.mp4'
+                ffmpeg(['-f','lavfi','-i',f'color=c={["red","blue","green"][i]}:size=120x160:rate=30:duration=1.2','-an','-c:v','libx264',p])
+                self.assertEqual(lib.import_video(p,'Город'),1)
+            rows=lib.choose(3,distinct_sources=True)
+            self.assertEqual(len({r['source'] for r in rows}),3)
+            self.assertTrue(all(0<r['duration_us']<5_000_000 for r in rows))
+            files=prepare_cycle_files(rows,root)
+            self.assertTrue(all(media_info(Path(p),'video')['duration']>=4_950_000 for p in files))
+            self.assertEqual(len(cycle_cuts([5_000_000],1_000_000,[])),3)
+            lib.record('1','project',rows,'song')
+            with self.assertRaises(LibraryShortage):lib.choose(3,distinct_sources=True)
+    def test_account_labels(self):
+        from account_names import account_name,validate_account_name
+        self.assertEqual(account_name({},'1'),'Аккаунт 1')
+        self.assertEqual(account_name({'account_1_name':'  Мой канал  '},'1'),'Мой канал')
+        with self.assertRaises(ValueError):validate_account_name(' ')
