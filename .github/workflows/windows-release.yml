@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - main
+      - studio-v8
     tags:
       - 'v*'
   workflow_dispatch:
@@ -32,14 +33,13 @@ jobs:
           python -m pip install -r requirements-build.txt
           choco install ffmpeg --yes --no-progress
           choco install innosetup --yes --no-progress
-          python -m playwright install chromium
           python -c "import PySide6.QtMultimedia; import librosa; import faster_whisper; print('runtime imports OK')"
       - name: Run unit tests and validate source
         shell: pwsh
         run: |
-          python -m py_compile app.py manual_lyrics.py
+          python -m py_compile app.py manual_lyrics.py studio_media.py studio_pipeline.py studio_ui.py builder.py
           if ($LASTEXITCODE -ne 0) { throw 'Python compilation failed' }
-          python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics -v
+          python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics test_studio -v
           if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
       - name: Smoke test manual song library UI
         shell: pwsh
@@ -60,10 +60,8 @@ jobs:
             --collect-all av `
             --collect-all librosa `
             --collect-all scipy `
-            --collect-all playwright `
             --hidden-import=PySide6.QtMultimedia `
             --collect-all sklearn `
-            --hidden-import=playwright.sync_api `
             app.py
           $destination = 'dist/CapCutAutoEditor'
           # imageio-ffmpeg provides a self-contained Windows FFmpeg build.
@@ -79,9 +77,6 @@ jobs:
             throw 'Bundled FFmpeg does not support H.264 encoding (libx264)'
           }
           Copy-Item (Get-Command ffprobe.exe).Source "$destination/ffprobe.exe"
-          $browser = Join-Path $env:LOCALAPPDATA 'ms-playwright'
-          if (!(Test-Path $browser)) { throw 'Chromium not installed' }
-          Copy-Item $browser "$destination/ms-playwright" -Recurse
           if (!(Test-Path "$destination/CapCutAutoEditor.exe")) { throw 'App EXE missing' }
       - name: Smoke test audio metadata INSIDE packaged EXE
         shell: pwsh

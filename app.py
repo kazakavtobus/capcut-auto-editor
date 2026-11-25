@@ -24,9 +24,12 @@ from PySide6.QtWidgets import (
     QCheckBox, QFileDialog, QMessageBox, QStackedWidget, QScrollArea,
     QTextEdit, QProgressBar, QGraphicsDropShadowEffect, QSizePolicy,
     QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QDoubleSpinBox,
-    QAbstractItemView, QSizeGrip
+    QAbstractItemView, QSizeGrip, QSpinBox
 )
-from auto_pipeline import load_settings, save_settings, run_auto
+from auto_pipeline import load_settings, save_settings
+from studio_media import MediaLibrary
+from studio_pipeline import render_batch
+from studio_ui import MediaDialog, ProjectsDialog, theme_style
 from subtitle_editor import _project_data, apply_changes
 from diagnostics import install_crash_logger, report_exception, LOG_FILE
 from version import VERSION
@@ -42,7 +45,7 @@ except ImportError:
     QMediaPlayer = QAudioOutput = None
 
 SETTINGS = load_settings()
-SETTINGS['provider'] = 'pinterest'
+SETTINGS['provider'] = 'local'
 SETTINGS['api_key'] = ''
 
 C = {
@@ -68,7 +71,7 @@ QLabel#micro {font-size: 11px; color: #8493B5; letter-spacing: 1px; font-weight:
 QLabel#heading {font-size: 27px; font-weight: 800;}
 QLabel#cardHeading {font-size: 17px; font-weight: 700;}
 QLabel#badge {color: #A9DCFF; background: #1C3251; border-radius: 11px; padding: 5px 10px; font-size: 11px; font-weight: 700;}
-QLabel#successBadge {color: #49E3BE; background: #153D3D; border-radius: 11px; padding: 5px 10px; font-weight: 700;}
+QLabel#successBadge {color: #30a46c; background: #153D3D; border-radius: 11px; padding: 5px 10px; font-weight: 700;}
 QPushButton {border: none; border-radius: 14px; background: #212C45; padding: 11px 16px; font-weight: 650;}
 QPushButton:hover {background: #344360;}
 QPushButton:disabled {color: #6E788F; background: #1A2233;}
@@ -140,7 +143,7 @@ def btn(text, style='secondary', handler=None):
 
 
 class TitleBar(QFrame):
-    def __init__(self, host, caption='CapCut Auto Editor'):
+    def __init__(self, host, caption='CapCut Studio'):
         super().__init__()
         self.host = host
         self._start = None
@@ -158,12 +161,12 @@ class TitleBar(QFrame):
         l.addWidget(logo)
         block=QWidget(); cols=vertical(block, 2)
         a=label(caption); a.setStyleSheet('font-size: 14px; font-weight: 800;')
-        b=label('NEON STUDIO  /  DESKTOP', 'micro')
+        b=label('ЛОКАЛЬНАЯ СТУДИЯ', 'micro')
         cols.addWidget(a); cols.addWidget(b)
         l.addWidget(block)
         l.addStretch()
         self.status=label('●  Готов к работе')
-        self.status.setStyleSheet('font-size: 12px; color: #49E3BE;')
+        self.status.setStyleSheet('font-size: 12px; color: #30a46c;')
         l.addWidget(self.status)
         l.addSpacing(16)
         for symbol,action,name in [('−',host.showMinimized,'circle'),('□',self.toggle_max,'circle'),('×',host.close,'close')]:
@@ -203,7 +206,7 @@ class DropZone(QFrame):
         l=vertical(self,7,(18,14,18,14))
         l.setAlignment(Qt.AlignCenter)
         ico=label('♫');ico.setAlignment(Qt.AlignCenter)
-        ico.setStyleSheet('font-size: 36px; color: #A88AFF;')
+        ico.setStyleSheet('font-size: 36px; color: #007aff;')
         self.title=label('Перетащи песню сюда')
         self.title.setAlignment(Qt.AlignCenter)
         self.title.setStyleSheet('font-size: 19px; font-weight: 700;')
@@ -234,16 +237,15 @@ class RenderWorker(QThread):
     update=Signal(str)
     result=Signal(object,object)
     failed=Signal(str)
-    def __init__(self,audio,settings):
+    def __init__(self,audio,settings,counts):
         super().__init__()
         self.audio=audio
         self.settings=settings.copy()
+        self.counts=counts.copy()
     def run(self):
         try:
             s=self.settings
-            project,info=run_auto(self.audio,s['projects_folder'],'pinterest','',
-                    s.get('whisper_model','medium'),progress=self.update.emit,
-                    separate_vocals=s.get('separate_vocals',False))
+            project,info=render_batch(self.audio,s,self.counts,progress=self.update.emit)
             self.result.emit(project,info)
         except Exception as exc:
             report_exception(exc, 'Ошибка сборки проекта')
@@ -620,6 +622,7 @@ class ManualSongDialog(QDialog):
         h=horizontal(space=8)
         h.addWidget(btn('Разметить примерно','secondary',self.distribute))
         h.addWidget(btn('Импортировать SRT','secondary',self.from_srt))
+        h.addWidget(btn('Разметка под музыку','secondary',self.start_tap))
         h.addStretch();layout.addLayout(h)
         self.hint=label('Начальные таймкоды ПРИБЛИЗИТЕЛЬНЫЕ. Обязательно проверь их по звуку.','muted',True)
         layout.addWidget(self.hint)
@@ -636,6 +639,7 @@ class ManualSongDialog(QDialog):
         actions.addWidget(btn('− Удалить','secondary',self.delete_row))
         actions.addWidget(btn('Начало = курсор','secondary',lambda:self.mark(0)))
         actions.addWidget(btn('Конец = курсор','secondary',lambda:self.mark(1)))
+        actions.addWidget(btn('Следующая фраза (Enter)','secondary',self.tap))
         actions.addStretch();layout.addLayout(actions)
         self.wave=WaveformTimeline(self);layout.addWidget(self.wave)
         self.wave.seekRequested.connect(self.seek)
@@ -651,7 +655,33 @@ class ManualSongDialog(QDialog):
         layout.addLayout(h)
         self.table.itemChanged.connect(self.redraw)
         self.table.itemSelectionChanged.connect(self.redraw)
+        self.tap_lines=[];self.tap_times=[]
+        from PySide6.QtGui import QShortcut,QKeySequence
+        self.tap_shortcut=QShortcut(QKeySequence('Return'),self)
+        self.tap_shortcut.setEnabled(False);self.tap_shortcut.activated.connect(self.tap)
         if audio and Path(audio).is_file():self.load_song(Path(audio))
+
+    def start_tap(self):
+        if not self.song or not self.player:return
+        lines=[clean_caption(t) for t in self.lyrics.toPlainText().splitlines() if clean_caption(t)]
+        if not lines:
+            QMessageBox.information(self,'Текст','Вставь слова построчно.');return
+        if QMessageBox.question(self,'Разметить под музыку?','Нажимай Enter в начале каждой фразы. Старая разметка заменится только после завершения всех фраз.')!=QMessageBox.Yes:return
+        self.tap_lines=lines;self.tap_times=[]
+        self.player.setPosition(0);self.tap_shortcut.setEnabled(True);self.hint.setText('Enter: '+lines[0]);self.player.play()
+
+    def tap(self):
+        if not self.tap_lines or not self.player:return
+        pos=int(self.player.position()*1000)
+        if self.tap_times and pos-self.tap_times[-1]<100_000:return
+        if pos>=self.duration_us:return
+        self.tap_times.append(pos)
+        if len(self.tap_times)<len(self.tap_lines):
+            self.hint.setText('Enter: '+self.tap_lines[len(self.tap_times)]);return
+        self.player.pause();self.tap_shortcut.setEnabled(False)
+        self.set_rows([(a,b,t) for a,b,t in zip(self.tap_times,self.tap_times[1:]+[self.duration_us],self.tap_lines)])
+        self.tap_lines=[];self.tap_times=[]
+        self.hint.setText('Разметка записана. Уточни границы фраз.')
 
     def choose(self):
         chosen,_=QFileDialog.getOpenFileName(self,'Выбери песню','',
@@ -799,7 +829,9 @@ class ManualSongDialog(QDialog):
         if QMessageBox.question(self,'Сохранить проверенную версию?',
             'Ты проверил слова и тайминги? Они будут использоваться во всех следующих '
             'роликах с этой MP3 БЕЗ Whisper. Сохранить?')!=QMessageBox.Yes:return
-        try:self.library.save(self.song,rows,verified=True,
+        try:
+            MediaLibrary(SETTINGS.get('media_root') or None).store_song(self.song)
+            self.library.save(self.song,rows,verified=True,
                               source='manual-library',display_name=self.song.name)
         except Exception as exc:
             QMessageBox.critical(self,'Не удалось сохранить',str(exc));return
@@ -816,7 +848,7 @@ class SongLibraryDialog(QDialog):
     def __init__(self,parent):
         super().__init__(parent)
         self.setWindowTitle('Библиотека песен')
-        self.resize(760,510)
+        self.resize(1100,540)
         self.library=SongLibrary()
         layout=vertical(self,14,(22,22,22,22))
         layout.addWidget(label('Библиотека исправленных песен','heading'))
@@ -830,6 +862,8 @@ class SongLibraryDialog(QDialog):
         layout.addWidget(self.table,1)
         row=horizontal(space=10)
         row.addWidget(btn('＋ Добавить песню','primary',self.add_song))
+        row.addWidget(btn('Редактировать','secondary',self.edit_song))
+        row.addWidget(btn('Выбрать для монтажа','secondary',self.use_song))
         row.addWidget(btn('↻ Обновить','secondary',self.refresh))
         row.addWidget(btn('↗ Открыть папку библиотеки','secondary',self.open_folder))
         row.addStretch()
@@ -841,6 +875,29 @@ class SongLibraryDialog(QDialog):
     def add_song(self):
         editor=ManualSongDialog(self)
         if editor.exec()==QDialog.Accepted:self.refresh()
+
+    def selected_audio(self):
+        i=self.table.currentRow()
+        if not 0<=i<len(self.entries):return None
+        _,doc=self.entries[i]
+        lib=MediaLibrary(SETTINGS.get('media_root') or None)
+        saved=list((lib.root/'songs').glob(doc['sha256']+'.*'))
+        if saved:return saved[0]
+        path,_=QFileDialog.getOpenFileName(self,'Выбери исходное аудио песни','','Аудио (*.mp3 *.wav *.m4a *.flac *.ogg)')
+        if not path:return None
+        from song_library import song_hash
+        if song_hash(Path(path))!=doc['sha256']:
+            QMessageBox.warning(self,'Другой файл','Содержимое аудио не совпадает с песней.');return None
+        return lib.store_song(Path(path))
+
+    def edit_song(self):
+        path=self.selected_audio()
+        if path and ManualSongDialog(self,path).exec()==QDialog.Accepted:self.refresh()
+
+    def use_song(self):
+        path=self.selected_audio()
+        if path:
+            self.parent().set_audio(str(path));self.accept()
 
     def refresh(self):
         self.entries=[]
@@ -877,7 +934,7 @@ class SongLibraryDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('CapCut Auto Editor ' + VERSION)
+        self.setWindowTitle('CapCut Studio ' + VERSION)
         self.resize(1100,780)
         self.setMinimumSize(890,660)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
@@ -921,13 +978,15 @@ class MainWindow(QMainWindow):
         l.addWidget(label('ИНСТРУМЕНТЫ','micro'))
         l.addWidget(btn('▤   Редактор субтитров','nav',self.open_captions))
         l.addWidget(btn('♫   Библиотека песен','nav',self.open_library))
+        l.addWidget(btn('▣   Медиатека','nav',self.open_media))
+        l.addWidget(btn('▤   Проекты','nav',self.open_projects))
         l.addStretch()
         box=card();bl=vertical(box,8,(15,15,15,15))
         bl.addWidget(label('✦   AUTO MODE'))
         desc=label('Одна песня — и проект собран автоматически.','muted',True)
         bl.addWidget(desc)
         l.addWidget(box)
-        l.addWidget(label('VERSION '+VERSION+'  /  NEON','micro'))
+        l.addWidget(label('VERSION '+VERSION+'  /  STUDIO','micro'))
 
     def scroll_page(self):
         page=QScrollArea();page.setObjectName('page');page.setWidgetResizable(True)
@@ -944,7 +1003,7 @@ class MainWindow(QMainWindow):
         t.addWidget(label('Загрузи трек — всё остальное соберём автоматически.','muted'))
         t.addWidget(label('Для повторного ролика сначала сохрани изменения в CapCut — я перенесу текст и тайминги автоматически.','muted',True))
         hdr.addWidget(titles);hdr.addStretch()
-        hdr.addWidget(label('PIN • AUTO','badge'))
+        hdr.addWidget(label('LOCAL STUDIO','badge'))
         l.addLayout(hdr)
         upload=card(True);upl=vertical(upload,12,(21,18,21,21))
         upl.addWidget(label('01    ИСХОДНЫЙ ТРЕК','micro'))
@@ -953,16 +1012,22 @@ class MainWindow(QMainWindow):
         self.file_name=label('Песня ещё не выбрана','muted')
         upl.addWidget(self.file_name)
         l.addWidget(upload)
+        profiles=card();pl=vertical(profiles,10,(18,16,18,16))
+        pl.addWidget(label('АККАУНТЫ · КОЛИЧЕСТВО ПРОЕКТОВ','micro'))
+        h=horizontal(space=10);self.counts={}
+        for a in ('1','2'):
+            h.addWidget(label('Аккаунт '+a));n=QSpinBox();n.setRange(0,20);n.setValue(1 if a=='1' else 0);self.counts[a]=n;h.addWidget(n,1)
+        pl.addLayout(h);pl.addWidget(btn('Выбрать песню из библиотеки','secondary',self.open_library));l.addWidget(profiles)
         row=horizontal(space=12)
         for num,ttl,desc,ico in [
-           ('02','ПОИСК','3 атмосферных видео','⌕'),
+           ('02','МЕДИАТЕКА','Свои футажи · Smart Shuffle','▣'),
            ('03','СУБТИТРЫ','Смысловые фразы','≡'),
            ('04','МОНТАЖ','Бит · эффекты · CapCut','✧')
         ]:
             c=card();cl=vertical(c,7,(16,16,16,16))
             top=horizontal(space=6)
             a=label(num,'micro');top.addWidget(a);top.addStretch()
-            glyph=label(ico);glyph.setStyleSheet('font-size: 19px; color: #9B83FF')
+            glyph=label(ico);glyph.setStyleSheet('font-size: 19px; color: #007aff')
             top.addWidget(glyph);cl.addLayout(top)
             cl.addWidget(label(ttl));cl.addWidget(label(desc,'muted',True))
             row.addWidget(c,1)
@@ -974,7 +1039,7 @@ class MainWindow(QMainWindow):
         glow.setBlurRadius(25)
         glow.setOffset(0,3)
         glow.setColor(QColor(124,92,255,110))
-        self.build_btn.setGraphicsEffect(glow)
+        # No neon glow in Studio.
         control.addWidget(self.build_btn,1)
         self.project_btn=btn('↗  Папка проекта','secondary',self.open_project_folder)
         self.project_btn.setEnabled(False)
@@ -1020,18 +1085,22 @@ class MainWindow(QMainWindow):
         form.addWidget(self.demucs)
         form.addWidget(label('Модель large-v3 точнее на некоторых песнях, но работает заметно дольше.','muted',True))
         l.addWidget(c)
-        browser=card();br=vertical(browser,13,(23,20,23,20))
-        br.addWidget(label('PINTEREST  ·  ФОНОВЫЙ ПОИСК','micro'))
-        br.addWidget(label('Одна тематика на ролик · Повторы только через 7 дней','muted',True))
-        br.addWidget(label('Браузер скрыт во время автоматического монтажа.','cardHeading',True))
-        br.addWidget(label('Только если Pinterest запросит авторизацию, нажми «Войти» — откроется обычное окно для входа. При капче или блокировке программа остановится.','muted',True))
-        br.addWidget(btn('Открыть Pinterest для входа','secondary',self.pinterest_login),0,Qt.AlignLeft)
-        l.addWidget(browser)
+        appearance=card();a=vertical(appearance,12,(23,20,23,20))
+        a.addWidget(label('ВНЕШНИЙ ВИД','micro'))
+        self.theme=QComboBox();self.theme.addItems(['Светлая','Тёмная'])
+        self.theme.setCurrentIndex(1 if SETTINGS.get('theme')=='dark' else 0)
+        self.theme.currentIndexChanged.connect(self.apply_theme);a.addWidget(self.theme);l.addWidget(appearance)
         local_template=card();lt=vertical(local_template,12,(23,20,23,20))
-        lt.addWidget(label('ЛОКАЛЬНЫЙ ШАБЛОН МОНТАЖА','micro'))
-        lt.addWidget(label('Твой шаблон CapCut хранится только на этом компьютере — не загружается в GitHub.','muted',True))
-        lt.addWidget(btn('Импортировать template_original.zip','secondary',self.import_template),0,Qt.AlignLeft)
+        lt.addWidget(label('ПРОФИЛИ АККАУНТОВ','micro'))
+        lt.addWidget(label('Отдельный эталонный проект CapCut для каждого аккаунта: шрифт, позиция текста, анимации и переходы.','muted',True))
+        lt.addWidget(btn('Аккаунт 1 · Импорт шаблона','secondary',lambda:self.import_template('1')))
+        lt.addWidget(btn('Аккаунт 2 · Импорт шаблона','secondary',lambda:self.import_template('2')))
         l.addWidget(local_template)
+        storage=card();sl=vertical(storage,10,(23,20,23,20))
+        sl.addWidget(label('ЛОКАЛЬНОЕ ХРАНИЛИЩЕ','micro'))
+        self.media_root=QLineEdit(SETTINGS.get('media_root',''));self.media_root.setPlaceholderText('По умолчанию: AppData / CapCutAutoEditor / studio')
+        sl.addWidget(self.media_root);sl.addWidget(btn('Выбрать папку медиатеки','secondary',self.pick_media_root))
+        sl.addWidget(label('Другая папка создаёт отдельную базу и историю. Для переноса копируй всю медиатеку.','muted',True));l.addWidget(storage)
         l.addWidget(btn('Сохранить настройки','primary',self.store_settings),0,Qt.AlignRight)
         l.addStretch()
 
@@ -1039,9 +1108,9 @@ class MainWindow(QMainWindow):
         content=self.scroll_page();l=vertical(content,16,(29,28,29,25))
         l.addWidget(label('О приложении','heading'))
         c=card();body=vertical(c,15,(25,24,25,24))
-        body.addWidget(label('✦   CAPCUT AUTO EDITOR','cardHeading'))
-        body.addWidget(label('Автоматическая сборка редактируемых проектов CapCut: музыкальный анализ, поиск трёх видео, субтитры, монтаж и эффекты.','muted',True))
-        body.addWidget(label('Pinterest работает в экспериментальном режиме. Используй для публикации только материалы, на которые у тебя есть права.','muted',True))
+        body.addWidget(label('CAPCUT STUDIO','cardHeading'))
+        body.addWidget(label('Редактируемые проекты CapCut из своей медиатеки: музыка, субтитры, монтаж и эффекты.','muted',True))
+        body.addWidget(label('Видеоряд берётся исключительно из локальной базы.','muted',True))
         body.addWidget(label('Распознавание вокала и разбиение на фразы может ошибаться — редактор субтитров доступен в боковом меню.','muted',True))
         body.addWidget(label('Версия '+VERSION,'muted'))
         body.addWidget(btn('Открыть журнал ошибок','secondary',self.open_logs),0,Qt.AlignLeft)
@@ -1074,7 +1143,7 @@ class MainWindow(QMainWindow):
                 'Найдено обновление '+release['tag']+'. Скачать и установить?\n\n'+release['notes'][:350]) != QMessageBox.Yes:
             return
         if (self.worker and self.worker.isRunning()) or (self.login_worker and self.login_worker.isRunning()):
-            QMessageBox.warning(self,'Занято','Дождись окончания монтажа или поиска Pinterest.')
+            QMessageBox.warning(self,'Занято','Дождись окончания монтажа.')
             return
         self._updating=True
         self.updates_btn.setEnabled(False)
@@ -1120,16 +1189,21 @@ class MainWindow(QMainWindow):
             self.note('Укажи путь к проектам CapCut в настройках (один раз).')
             self.change_page(1)
 
-    def import_template(self):
-        filename,_=QFileDialog.getOpenFileName(self,'Выбери template_original.zip из V7.3','',
+    def import_template(self,account='1'):
+        filename,_=QFileDialog.getOpenFileName(self,'ZIP проекта CapCut для аккаунта '+account,'',
                                                'Архив проекта (*.zip)')
         if not filename:return
         try:
             with zipfile.ZipFile(filename) as z:
                 if not any(x.endswith('/draft_content.json') for x in z.namelist()):
                     raise ValueError('Это не ZIP-шаблон CapCut с draft_content.json.')
-            USER_TEMPLATE_ZIP.parent.mkdir(parents=True,exist_ok=True)
-            shutil.copy2(filename,USER_TEMPLATE_ZIP)
+            from builder import load_original_zip
+            data=load_original_zip(filename)[0]
+            if [t['type'] for t in data['tracks'][:3]]!=['video','text','audio']:
+                raise ValueError('Нужны дорожки video, text, audio в порядке исходного проекта.')
+            dest=USER_TEMPLATE_ZIP if account=='1' else MediaLibrary().root/'account_2.zip'
+            dest.parent.mkdir(parents=True,exist_ok=True)
+            tmp=dest.with_suffix('.new');shutil.copy2(filename,tmp);tmp.replace(dest)
         except Exception as exc:
             QMessageBox.warning(self,'Не удалось импортировать',str(exc));return
         QMessageBox.information(self,'Шаблон сохранён',
@@ -1146,7 +1220,8 @@ class MainWindow(QMainWindow):
         p=self.folder.text().strip()
         if not Path(p).is_dir():
             QMessageBox.warning(self,'Папка не найдена','Выбери существующую папку проектов CapCut.');return False
-        SETTINGS.update({'provider':'pinterest','api_key':'','projects_folder':p,
+        SETTINGS.update({'provider':'local','api_key':'','projects_folder':p,
+                         'media_root':self.media_root.text().strip(),'theme':'dark' if self.theme.currentIndex() else 'light',
                          'whisper_model':self.model.currentText(),
                          'separate_vocals':self.demucs.isChecked()})
         save_settings(SETTINGS)
@@ -1154,12 +1229,21 @@ class MainWindow(QMainWindow):
         self.change_page(0)
         return True
 
-    def pinterest_login(self):
-        if self.login_worker is not None and self.login_worker.isRunning():return
-        self.login_worker=LoginWorker(self)
-        self.login_worker.done.connect(lambda msg: QMessageBox.information(self,'Pinterest',msg))
-        self.login_worker.start()
-        QMessageBox.information(self,'Pinterest','Сейчас откроется окно для входа. Войди в Pinterest и закрой его — дальнейший поиск будет фоновым.')
+    def apply_theme(self,index):
+        SETTINGS['theme']='dark' if index else 'light'
+        QApplication.instance().setStyleSheet(theme_style(bool(index)))
+        save_settings(SETTINGS)
+
+    def pick_media_root(self):
+        p=QFileDialog.getExistingDirectory(self,'Папка медиатеки')
+        if p:self.media_root.setText(p)
+
+    def open_media(self):
+        if self.worker and self.worker.isRunning():return
+        MediaDialog(self,SETTINGS.get('media_root')).exec()
+
+    def open_projects(self):
+        ProjectsDialog(self,SETTINGS.get('media_root')).exec()
 
     def start(self):
         if self.worker is not None and self.worker.isRunning():return
@@ -1168,7 +1252,10 @@ class MainWindow(QMainWindow):
         if not Path(SETTINGS.get('projects_folder','')).is_dir():
             QMessageBox.warning(self,'Нет папки проектов','В настройках укажи папку проектов CapCut.')
             self.change_page(1);return
-        self.build_btn.setText('◌   Создаю проект…')
+        counts={a:n.value() for a,n in self.counts.items()}
+        if not sum(counts.values()):
+            QMessageBox.information(self,'Аккаунт','Выбери количество проектов.');return
+        self.build_btn.setText('◌   Создаю проекты…')
         self.build_btn.setProperty('working', True)
         self.build_btn.style().unpolish(self.build_btn)
         self.build_btn.style().polish(self.build_btn)
@@ -1177,7 +1264,7 @@ class MainWindow(QMainWindow):
         self.header.status.setText('●  Монтирую')
         self.progress.setRange(0,0)
         self.note('Запускаю автоматическую сборку...')
-        self.worker=RenderWorker(self.audio,SETTINGS)
+        self.worker=RenderWorker(self.audio,SETTINGS,counts)
         self.worker.update.connect(self.note)
         self.worker.result.connect(self.finish)
         self.worker.failed.connect(self.failed)
@@ -1196,7 +1283,7 @@ class MainWindow(QMainWindow):
         self.header.status.setText('●  Готово')
         self.note(f"Проект собран: {info.get('clips',0)} видеофрагментов, {info.get('captions',0)} субтитров.")
         QMessageBox.information(self,'Проект готов',
-           'Редактируемый проект создан. Если CapCut уже открыт — перезапусти его, чтобы появился новый проект.\n\n'+str(path))
+           f"Создано проектов: {info.get('total',1)}. Перезапусти CapCut, чтобы увидеть их.\n\n"+'\n'.join(info.get('projects',[str(path)])))
 
     def failed(self,msg):
         self.build_btn.setEnabled(True)
@@ -1284,7 +1371,7 @@ def main():
         app.setWindowIcon(QIcon(str(icon_path)))
     app.setStyle('Fusion')
     app.setFont(QFont('Inter Tight',10))
-    app.setStyleSheet(STYLES)
+    app.setStyleSheet(theme_style(SETTINGS.get('theme')=='dark'))
     window=MainWindow()
     if icon_path.is_file():
         window.setWindowIcon(QIcon(str(icon_path)))

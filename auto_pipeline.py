@@ -379,7 +379,7 @@ def settings_file() -> Path:
     return CONFIG_DIR/'settings.json'
 
 def load_settings() -> dict:
-    default={'provider':'pinterest','api_key':'',
+    default={'provider':'local','api_key':'','theme':'light','media_root':'',
              'projects_folder':str(Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) /
                       'CapCut'/'User Data'/'Projects'/'com.lveditor.draft'),
              'whisper_model':'medium','separate_vocals':False}
