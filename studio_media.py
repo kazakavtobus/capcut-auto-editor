@@ -1,5 +1,6 @@
 """Persistent local footage library. No network sources."""
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -38,9 +39,29 @@ class MediaLibrary:
             c.executescript("""
             CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY,name TEXT,path TEXT,category TEXT);
             CREATE TABLE IF NOT EXISTS clips(id TEXT PRIMARY KEY,source TEXT,idx INTEGER,path TEXT,preview TEXT,enabled INTEGER DEFAULT 1);
-            CREATE TABLE IF NOT EXISTS renders(id INTEGER PRIMARY KEY AUTOINCREMENT,account TEXT,path TEXT UNIQUE,created REAL,sequence TEXT UNIQUE, song TEXT);
+            CREATE TABLE IF NOT EXISTS renders(id INTEGER PRIMARY KEY AUTOINCREMENT,account TEXT,path TEXT UNIQUE,created REAL,sequence TEXT, song TEXT);
             CREATE TABLE IF NOT EXISTS used(render_id INTEGER,clip_id TEXT,position INTEGER,PRIMARY KEY(render_id,position));
             """)
+            c.execute('BEGIN IMMEDIATE')
+            # Remove global uniqueness without deleting past projects or clip usage.
+            unique_sequence=False
+            for idx in c.execute('PRAGMA index_list(renders)').fetchall():
+                if idx['unique']:
+                    name=idx['name'].replace('"','""')
+                    if [r['name'] for r in c.execute(f'PRAGMA index_info("{name}")')]==['sequence']:
+                        unique_sequence=True
+            if unique_sequence:
+                seq=c.execute("SELECT seq FROM sqlite_sequence WHERE name='renders'").fetchone()
+                c.execute("""CREATE TABLE renders_v813(id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account TEXT,path TEXT UNIQUE,created REAL,sequence TEXT,song TEXT)""")
+                c.execute("""INSERT INTO renders_v813(id,account,path,created,sequence,song)
+                    SELECT id,account,path,created,sequence,song FROM renders""")
+                c.execute('DROP TABLE renders')
+                c.execute('ALTER TABLE renders_v813 RENAME TO renders')
+                if seq:
+                    c.execute("UPDATE sqlite_sequence SET seq=max(seq,?) WHERE name='renders'",(seq[0],))
+            c.execute('CREATE INDEX IF NOT EXISTS used_clip_history ON used(clip_id,render_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS render_sequence_history ON renders(sequence,id)')
             if not any(r[1]=="duration_us" for r in c.execute("PRAGMA table_info(clips)")):
                 c.execute("ALTER TABLE clips ADD COLUMN duration_us INTEGER NOT NULL DEFAULT 5000000")
     @contextmanager
@@ -142,28 +163,37 @@ class MediaLibrary:
                 c.executemany('INSERT INTO clips(id,source,idx,path,preview,duration_us) VALUES(?,?,?,?,?,?)',[(key,d,i,str(Path(p).relative_to(self.root)),str(Path(v).relative_to(self.root)),length) for key,d,i,p,v,length in rows])
         return len(rows)
     def choose(self,count,distinct_sources=False):
+        """Prefer fresh and rare footage, but never block solely on usage history."""
         if count<=0:raise ValueError('Нет монтажных интервалов.')
+        pool=[r for r in self.clips() if r['enabled'] and Path(r['path']).is_file()]
+        if len(pool)<count:
+            raise LibraryShortage(f'Нужно минимум {count} разных активных фрагментов, доступно {len(pool)}.')
         with self.connect() as c:
-            recent={r[0] for r in c.execute('SELECT clip_id FROM used WHERE render_id IN (SELECT id FROM renders ORDER BY id DESC LIMIT ?)',(RECENT,))}
-            sequences={r[0] for r in c.execute('SELECT sequence FROM renders')}
-        available=[r for r in self.clips() if r['enabled'] and r['id'] not in recent and Path(r['path']).is_file()]
-        if len(available)<count:raise LibraryShortage(f'Нужно {count} свежих фрагментов, доступно {len(available)}. Пополни базу: повторы в последних 4 проектах запрещены.')
-        if distinct_sources and len({r['source'] for r in available})<count:
-            raise LibraryShortage(f'Нужно {count} разных исходных видео со свежими фрагментами.')
+            ids=[r[0] for r in c.execute('SELECT id FROM renders ORDER BY id DESC LIMIT ?',(RECENT,))]
+            recent={}
+            for i,rid in enumerate(ids):
+                for row in c.execute('SELECT clip_id FROM used WHERE render_id=?',(rid,)):
+                    recent[row[0]]=max(recent.get(row[0],0),len(ids)-i)
+            sequences={r[0]:r[1] for r in c.execute('SELECT sequence,max(id) FROM renders GROUP BY sequence')}
+            last=c.execute('SELECT sequence FROM renders ORDER BY id DESC LIMIT 1').fetchone()
+        previous=json.loads(last[0]) if last else []
         rng=random.SystemRandom()
-        for attempt in range(80):
-            pool=available.copy();result=[]
-            for i in range(count):
-                if distinct_sources:
-                    used_sources={r['source'] for r in result}
-                    options=[r for r in pool if r['source'] not in used_sources]
-                else:
-                    options=[r for r in pool if not result or r['source']!=result[-1]['source']]
-                if not options:break
-                options.sort(key=lambda r:(r['uses'],r['last_use'] or 0,rng.random()))
-                best=options[0];result.append(best);pool.remove(best)
-            if len(result)==count and json.dumps([r['id'] for r in result]) not in sequences:return result
-        raise LibraryShortage('Не хватает разных исходников для уникальной последовательности. Добавь видео с другими сценами.')
+        selected=[];sources=set()
+        for _ in range(count):
+            candidates=[r for r in pool if r['source'] not in sources] if distinct_sources else pool
+            if not candidates:candidates=pool
+            best=min(candidates,key=lambda r:(recent.get(r['id'],0),r['uses'],r['last_use'] or 0,rng.random()))
+            selected.append(best);sources.add(best['source']);pool.remove(best)
+        def score(order):
+            ids=[r['id'] for r in order]
+            return (sequences.get(json.dumps(ids),0),
+                    int(bool(previous) and ids[0]==previous[0]),
+                    sum(a['source']==b['source'] for a,b in zip(order,order[1:])),
+                    sum(a==b for a,b in zip(ids,previous)),rng.random())
+        orders=itertools.permutations(selected) if count<=6 else [selected]+[rng.sample(selected,count) for _ in range(80)]
+        result=list(min(orders,key=score))
+        for row in result:row['recent_reuse']=bool(recent.get(row['id'],0))
+        return result
     def record(self,account,path,clips,song):
         ids=[x['id'] for x in clips]
         with self.connect() as c:

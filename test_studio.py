@@ -146,9 +146,65 @@ class StudioTests(unittest.TestCase):
             self.assertTrue(all(media_info(Path(p),'video')['duration']>=4_950_000 for p in files))
             self.assertEqual(len(cycle_cuts([5_000_000],1_000_000,[])),3)
             lib.record('1','project',rows,'song')
-            with self.assertRaises(LibraryShortage):lib.choose(3,distinct_sources=True)
+            again=lib.choose(3,distinct_sources=True)
+            self.assertEqual({r['id'] for r in again},{r['id'] for r in rows})
+            self.assertNotEqual([r['id'] for r in again],[r['id'] for r in rows])
     def test_account_labels(self):
         from account_names import account_name,validate_account_name
         self.assertEqual(account_name({},'1'),'Аккаунт 1')
         self.assertEqual(account_name({'account_1_name':'  Мой канал  '},'1'),'Мой канал')
         with self.assertRaises(ValueError):validate_account_name(' ')
+
+
+    def test_small_library_rotates_without_exhaustion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lib=MediaLibrary(tmp)
+            with lib.connect() as c:
+                for i in range(3):
+                    k=str(i);p=Path(tmp)/(k+'.mp4');p.write_bytes(b'fixture')
+                    c.execute('INSERT INTO sources VALUES(?,?,?,?)',(k,k,str(p),'Город'))
+                    c.execute('INSERT INTO clips(id,source,idx,path,preview) VALUES(?,?,?,?,?)',(k,k,0,str(p),''))
+            orders=[]
+            for i in range(15):
+                rows=lib.choose(3,distinct_sources=True)
+                ids=tuple(r['id'] for r in rows)
+                self.assertEqual(len(set(ids)),3)
+                if orders:self.assertNotEqual(ids,orders[-1])
+                orders.append(ids);lib.record(str(i%2+1),str(i),rows,'song')
+            self.assertEqual(len(set(orders[:6])),6)
+            self.assertEqual(len(lib.projects()),15)
+            self.assertEqual([r['uses'] for r in lib.clips()],[15,15,15])
+
+    def test_fresh_preferred_even_with_one_original(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lib=MediaLibrary(tmp)
+            with lib.connect() as c:
+                c.execute('INSERT INTO sources VALUES(?,?,?,?)',('one','Исходник','original.mp4','Город'))
+                for i in range(5):
+                    k=str(i);p=Path(tmp)/(k+'.mp4');p.write_bytes(b'fixture')
+                    c.execute('INSERT INTO clips(id,source,idx,path,preview) VALUES(?,?,?,?,?)',(k,'one',i,str(p),''))
+            rows=lib.choose(3,distinct_sources=True);lib.record('1','first',rows,'song')
+            second=lib.choose(3,distinct_sources=True)
+            self.assertEqual(len({r['id'] for r in second}),3)
+            self.assertEqual(sum(r['recent_reuse'] for r in second),1)
+            lib.enabled(second[0]['id'],False)
+            self.assertNotIn(second[0]['id'],[r['id'] for r in lib.choose(3,distinct_sources=True)])
+
+    def test_migrate_unique_sequence_history(self):
+        import sqlite3,json
+        with tempfile.TemporaryDirectory() as tmp:
+            db=Path(tmp)/'library.sqlite3'
+            c=sqlite3.connect(db)
+            c.executescript("""CREATE TABLE renders(id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account TEXT,path TEXT UNIQUE,created REAL,sequence TEXT UNIQUE,song TEXT);
+                CREATE TABLE used(render_id INTEGER,clip_id TEXT,position INTEGER,PRIMARY KEY(render_id,position));""")
+            seq=json.dumps(['a','b','c'])
+            c.execute('INSERT INTO renders VALUES(?,?,?,?,?,?)',(9,'2','old',1.0,seq,'song'))
+            c.executemany('INSERT INTO used VALUES(?,?,?)',[(9,k,i) for i,k in enumerate(['a','b','c'])])
+            c.commit();c.close()
+            lib=MediaLibrary(tmp)
+            self.assertEqual(lib.projects()[0]['id'],9)
+            lib.record('1','new',[{'id':k} for k in ['a','b','c']],'song')
+            self.assertEqual([r['id'] for r in lib.projects()],[10,9])
+            with lib.connect() as c:self.assertEqual(c.execute('SELECT count(*) FROM used').fetchone()[0],6)
+            self.assertEqual(len(MediaLibrary(tmp).projects()),2)

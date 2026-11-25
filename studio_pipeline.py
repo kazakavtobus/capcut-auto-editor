@@ -79,6 +79,8 @@ def render_batch(audio,settings,counts,progress=None,library=None):
                 try:clips=lib.choose(3,distinct_sources=True)
                 except ValueError as exc:raise ValueError(f'Уже создано {len(projects)} из {total} проектов. '+str(exc)) from exc
                 name=unique_project_name(folder,Path(f'{label} — {title}.mp3'.replace('/', ' ').replace('\\',' ')))
+                reused=sum(bool(r.get('recent_reuse')) for r in clips)
+                say(f'Подбор: {3-reused} свежих, {reused} недавних футажей')
                 paths=prepare_cycle_files(clips,tmp,say)
                 project,info=build(str(audio),paths,str(folder),name,
                     srt_file=str(srt),beats_override=beats,embed_assets=True,
