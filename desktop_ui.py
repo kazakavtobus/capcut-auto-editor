@@ -37,6 +37,7 @@ def icon(name,color='#657185',size=20):
 
 def apply_appearance(dark=False):
     app=QApplication.instance()
+    app.setProperty('studioDark',bool(dark))
     p=QPalette()
     bg='#17191e' if dark else '#f5f6f8'
     surface='#22252c' if dark else '#ffffff'
@@ -57,7 +58,12 @@ def apply_appearance(dark=False):
       QFrame#topbar {{background:{surface};border-bottom:1px solid {'#343841' if dark else '#e4e7ed'};}}
       QLabel#heading {{font-size:30px;font-weight:700;}}
       QLabel#eyebrow {{font-size:12px;color:{muted};font-weight:600;}}
-      QLabel#metric {{font-size:29px;font-weight:700;}}
+      QLabel#metric {{font-size:29px;font-weight:700;color:{text};}}
+      QLabel#countValue {{font-size:20px;font-weight:700;color:{text};background:{surface};border:1px solid {'#414650' if dark else '#dce0e6'};border-radius:10px;padding:0;}}
+      QPushButton#countStep {{font-size:19px;font-weight:600;padding:0;min-width:36px;min-height:36px;}}
+      QPushButton#countStep:disabled {{color:{muted};background:{bg};}}
+      QLineEdit,QAbstractSpinBox QLineEdit {{color:{text};selection-color:#ffffff;}}
+      QAbstractSpinBox {{padding:5px 23px 5px 8px;}}
       QPushButton#nav {{text-align:left;padding:12px 14px;min-height:20px;border-radius:10px;}}
       QPushButton#primary {{min-height:23px;}}
       QComboBox,QSpinBox,QDoubleSpinBox,QLineEdit {{color:{text};background:{surface};min-height:23px;}}
@@ -106,39 +112,96 @@ class Ring(QWidget):
         p.setPen(self.palette().color(QPalette.WindowText));f=p.font();f.setPixelSize(10);p.setFont(f)
         p.drawText(self.rect(),Qt.AlignCenter,'…' if self.value is None else str(self.value)+'%')
 
+def dark_theme():
+    return bool(QApplication.instance().property('studioDark'))
+
+def asset_colors(dark=None,selected=False):
+    dark=dark_theme() if dark is None else dark
+    return dict(surface=('#26364e' if dark else '#edf4ff') if selected else ('#252830' if dark else '#ffffff'),
+                border='#3478f6' if selected else ('#3a404b' if dark else '#dfe4eb'),
+                text='#f0f2f6' if dark else '#20242c',
+                muted='#b4bdca' if dark else '#5e697a',
+                placeholder='#30343c' if dark else '#e8ebf0')
+
+class ProjectCount(QWidget):
+    """Non-editable number with explicit paint-independent label, no spinbox clipping."""
+    valueChanged=Signal(int)
+    def __init__(self,value=0,parent=None):
+        super().__init__(parent);self._value=-1
+        l=QHBoxLayout(self);l.setContentsMargins(0,0,0,0);l.setSpacing(6)
+        self.minus=QPushButton('−');self.plus=QPushButton('+')
+        for b in (self.minus,self.plus):
+            b.setObjectName('countStep');b.setFixedSize(38,38);b.setCursor(Qt.PointingHandCursor)
+        self.number=QLabel();self.number.setObjectName('countValue');self.number.setAlignment(Qt.AlignCenter)
+        self.number.setFixedSize(54,38);self.number.setAccessibleName('Количество роликов')
+        self.minus.setAccessibleName('Уменьшить количество роликов');self.plus.setAccessibleName('Увеличить количество роликов')
+        l.addWidget(self.minus);l.addWidget(self.number);l.addWidget(self.plus)
+        self.minus.clicked.connect(lambda:self.setValue(self._value-1))
+        self.plus.clicked.connect(lambda:self.setValue(self._value+1))
+        self.setValue(value)
+    def value(self):return self._value
+    def setValue(self,value):
+        value=max(0,min(20,int(value)))
+        if value==self._value:return
+        self._value=value;self.number.setText(str(value))
+        self.minus.setEnabled(value>0);self.plus.setEnabled(value<20)
+        self.valueChanged.emit(value)
+
 class AssetDelegate(QStyledItemDelegate):
     def __init__(self,parent=None):
         super().__init__(parent);self.cache={}
-    def sizeHint(self,option,index):return QSize(180,224)
+    def sizeHint(self,option,index):return QSize(178,353)
     def paint(self,p,option,index):
         r=option.rect.adjusted(5,5,-5,-5);data=index.data(Qt.UserRole) or {}
-        p.save();p.setRenderHint(QPainter.Antialiasing)
-        dark=option.palette.color(QPalette.Window).lightness()<100
         selected=bool(option.state&QStyle.State_Selected)
-        path=QPainterPath();path.addRoundedRect(QRectF(r),13,13)
-        p.fillPath(path,QColor('#263c5c' if dark and selected else '#e9f2ff' if selected else '#22252c' if dark else '#ffffff'))
-        p.setPen(QPen(QColor('#3478f6' if selected else '#39404b' if dark else '#e2e6ec'),1.5));p.drawPath(path)
-        img=QRect(r.x()+8,r.y()+8,r.width()-16,143)
-        pp=QPainterPath();pp.addRoundedRect(QRectF(img),8,8)
-        p.save();p.setClipPath(pp);p.fillRect(img,QColor('#20252d'))
+        c=asset_colors(selected=selected)
+        p.save();p.setRenderHint(QPainter.Antialiasing)
+        path=QPainterPath();path.addRoundedRect(QRectF(r),14,14)
+        p.fillPath(path,QColor(c['surface']))
+        p.setPen(QPen(QColor(c['border']),2 if selected else 1));p.drawPath(path)
+        # Portrait 9:16 cover fills the card; no dark sidebars or tiny thumbnail.
+        width=r.width()-16;height=min(round(width*16/9),r.height()-76)
+        img=QRect(r.x()+8,r.y()+8,width,height)
+        pp=QPainterPath();pp.addRoundedRect(QRectF(img),9,9)
+        p.save();p.setClipPath(pp);p.fillRect(img,QColor(c['placeholder']))
         key=data.get('preview','')
         if key not in self.cache:
             self.cache[key]=QPixmap(key)
             if len(self.cache)>250:self.cache.pop(next(iter(self.cache)))
         px=self.cache[key]
         if not px.isNull():
-            scaled=px.scaled(img.size(),Qt.KeepAspectRatio,Qt.SmoothTransformation)
+            scaled=px.scaled(img.size(),Qt.KeepAspectRatioByExpanding,Qt.SmoothTransformation)
             p.drawPixmap(img.x()+(img.width()-scaled.width())//2,img.y()+(img.height()-scaled.height())//2,scaled)
+        else:
+            p.setPen(QColor(c['muted']));p.drawText(img,Qt.AlignCenter,'Нет превью')
         p.restore()
-        p.setPen(option.palette.color(QPalette.Text))
+        # Fixed, theme-aware footer with complete visible text and clip number.
+        footer=img.bottom()+8
+        p.setPen(QColor(c['text']))
         font=QFont(option.font);font.setBold(True);font.setPixelSize(13);p.setFont(font)
-        title=f"{Path(data.get('name','')).stem} · {int(data.get('idx',0))+1:02d}"
-        p.drawText(QRect(r.x()+10,r.y()+156,r.width()-20,22),Qt.AlignVCenter,p.fontMetrics().elidedText(title,Qt.ElideRight,r.width()-20))
-        font.setBold(False);font.setPixelSize(11);p.setFont(font)
-        p.setPen(QColor('#a6afbe' if dark else '#657185'))
-        p.drawText(QRect(r.x()+10,r.y()+179,r.width()-20,18),Qt.AlignVCenter,f"{data.get('category','')}  ·  5 сек")
-        p.drawText(QRect(r.x()+10,r.y()+196,r.width()-20,17),Qt.AlignVCenter,('Активен' if data.get('enabled') else 'Исключён')+f"  ·  {data.get('uses',0)} исп.")
+        title=f"{Path(data.get('name','')).stem or 'Видео'} · {int(data.get('idx',0))+1:02d}"
+        p.drawText(QRect(r.x()+10,footer,r.width()-20,20),Qt.AlignVCenter,p.fontMetrics().elidedText(title,Qt.ElideRight,r.width()-20))
+        font.setBold(False);font.setPixelSize(12);p.setFont(font);p.setPen(QColor(c['muted']))
+        p.drawText(QRect(r.x()+10,footer+21,r.width()-20,18),Qt.AlignVCenter,f"{data.get('category','')} · 5 сек")
+        status=('Активен' if data.get('enabled') else 'Исключён')+f" · {data.get('uses',0)} исп."
+        p.drawText(QRect(r.x()+10,footer+40,r.width()-20,17),Qt.AlignVCenter,p.fontMetrics().elidedText(status,Qt.ElideRight,r.width()-20))
         p.restore()
+
+class AssetGrid(QListWidget):
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self.setViewMode(QListView.IconMode);self.setResizeMode(QListView.Adjust);self.setMovement(QListView.Static)
+        self.setWrapping(True);self.setUniformItemSizes(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.setGridSize(QSize(178,353))
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        available=max(155,self.viewport().width()-4)
+        columns=max(1,available//178)
+        width=min(218,max(150,available//columns))
+        height=round((width-26)*16/9)+90
+        self.setGridSize(QSize(width,height))
 
 class MediaPage(QWidget):
     task=Signal(str,object)
@@ -153,8 +216,7 @@ class MediaPage(QWidget):
         self.filter=QComboBox();self.filter.addItems(['Все категории',*CATEGORIES]);controls.addWidget(self.filter,1)
         self.category=QComboBox();self.category.addItems(list(CATEGORIES));self.category.setToolTip('Категория новых импортируемых материалов')
         controls.addWidget(label('Импорт как:','muted'));controls.addWidget(self.category,1);l.addLayout(controls)
-        self.grid=QListWidget();self.grid.setObjectName('assets');self.grid.setViewMode(QListView.IconMode);self.grid.setResizeMode(QListView.Adjust);self.grid.setMovement(QListView.Static)
-        self.grid.setWrapping(True);self.grid.setUniformItemSizes(True);self.grid.setGridSize(QSize(180,224));self.grid.setItemDelegate(AssetDelegate(self.grid))
+        self.grid=AssetGrid();self.grid.setObjectName('assets');self.grid.setItemDelegate(AssetDelegate(self.grid))
         self.grid.setSelectionMode(QListWidget.SingleSelection);self.grid.itemDoubleClicked.connect(lambda _:self.preview());l.addWidget(self.grid,1)
         self.empty=label('Медиатека пуста. Добавь свои исходники, чтобы создать пятисекундные ЧБ-фрагменты.','muted');self.empty.setWordWrap(True);l.addWidget(self.empty)
         actions=QHBoxLayout()
@@ -170,7 +232,7 @@ class MediaPage(QWidget):
         self.summary.setText(f'{len(allrows)} фрагментов · {sum(r["enabled"] for r in allrows)} активных · {len(set(r["source"] for r in allrows))} исходников')
         self.grid.clear()
         for r in self.rows:
-            item=QListWidgetItem();item.setData(Qt.UserRole,r);item.setToolTip(r['name']);self.grid.addItem(item)
+            item=QListWidgetItem();item.setData(Qt.UserRole,r);item.setToolTip(f"{r['name']} · Фрагмент {r['idx']+1}");self.grid.addItem(item)
         self.empty.setVisible(not self.rows)
         self.empty.setText('Нет подходящих материалов.' if allrows else 'Медиатека пуста. Добавь свои исходники или перетащи их сюда.')
     def selected(self):

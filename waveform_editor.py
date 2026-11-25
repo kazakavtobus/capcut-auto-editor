@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QBrush
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget,QApplication
 
 
 def waveform_peaks(audio: Path, bins: int = 1200) -> list[float]:
@@ -73,29 +73,30 @@ class WaveformTimeline(QWidget):
     def paintEvent(self, event):
         p=QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(),QColor('#11182A'))
+        dark=bool(QApplication.instance().property('studioDark'))
+        p.fillRect(self.rect(),QColor('#242832' if dark else '#f0f3f8'))
         mid=67
         w=max(1,self.width()-30)
         if self.peaks:
             for n in range(w):
                 i=min(len(self.peaks)-1,int(n/w*len(self.peaks)))
                 h=min(48,3+self.peaks[i]*65)
-                p.setPen(QPen(QColor('#947DFF') if self._sec(n+15)<self.position else QColor('#495B83'),1))
+                p.setPen(QPen(QColor('#3478f6') if self._sec(n+15)<self.position else QColor('#8794a9' if dark else '#a2afc2'),1))
                 p.drawLine(n+15,int(mid-h/2),n+15,int(mid+h/2))
-        p.fillRect(0,110,self.width(),35,QColor('#0D1425'))
+        p.fillRect(0,110,self.width(),35,QColor('#1c2029' if dark else '#e3e8f1'))
         for i,row in enumerate(self.rows):
             start,end = float(row['start']),float(row['end'])
             left=max(15,round(self._x(start)))
             right=min(self.width()-15,round(self._x(end)))
             if right<=left:continue
-            p.fillRect(left,112,right-left,27,QColor('#7857E9' if i==self.selected else '#343F67'))
+            p.fillRect(left,112,right-left,27,QColor('#3478f6' if i==self.selected else '#53647f' if dark else '#d0def2'))
             if i==self.selected:
-                p.fillRect(left,112,3,27,QColor('#46D8FF'))
-                p.fillRect(right-3,112,3,27,QColor('#46D8FF'))
-            p.setPen(QColor('#F4F2FF'))
+                p.fillRect(left,112,3,27,QColor('#ffffff'))
+                p.fillRect(right-3,112,3,27,QColor('#ffffff'))
+            p.setPen(QColor('#ffffff' if dark or i==self.selected else '#20242c'))
             text=str(row.get('text','')).replace('\n',' ')
             p.drawText(left+5,131,p.fontMetrics().elidedText(text,Qt.ElideRight,max(0,right-left-10)))
-        p.setPen(QPen(QColor('#D7D4FF'),2))
+        p.setPen(QPen(QColor('#a7c8ff' if dark else '#2462c5'),2))
         px=round(self._x(self.position))
         p.drawLine(px,10,px,144)
         p.end()

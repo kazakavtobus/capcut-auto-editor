@@ -30,7 +30,7 @@ from auto_pipeline import load_settings, save_settings
 from studio_media import MediaLibrary
 from studio_pipeline import render_batch
 from studio_ui import MediaDialog, ProjectsDialog, ProfilesDialog, theme_style
-from desktop_ui import MediaPage, SongsPage, Ring, icon, apply_appearance, panel
+from desktop_ui import MediaPage, SongsPage, Ring, ProjectCount, icon, apply_appearance, panel
 from composition_preview import CompositionPreview
 from subtitle_editor import _project_data, apply_changes
 from diagnostics import install_crash_logger, report_exception, LOG_FILE
@@ -1026,9 +1026,8 @@ class MainWindow(QMainWindow):
             c=panel();pl=vertical(c,9,(20,18,20,18));pl.addWidget(label('Аккаунт '+a,'cardHeading'))
             st=label('Проверка эталона…','muted',True);self.profile_status[a]=st;pl.addWidget(st)
             h=horizontal(space=8);h.addWidget(label('Роликов','muted'));h.addStretch()
-            n=QSpinBox();n.setRange(0,20);n.setValue(1 if a=='1' else 0);n.setButtonSymbols(QAbstractSpinBox.NoButtons);n.setFixedWidth(60);n.setAlignment(Qt.AlignCenter)
-            self.counts[a]=n
-            h.addWidget(btn('−','secondary',lambda checked=False,x=n:x.setValue(x.value()-1)));h.addWidget(n);h.addWidget(btn('+','secondary',lambda checked=False,x=n:x.setValue(x.value()+1)))
+            n=ProjectCount(1 if a=='1' else 0);self.counts[a]=n
+            h.addWidget(n)
             pl.addLayout(h);profiles.addWidget(c,1)
         l.addLayout(profiles)
         control=horizontal(space=10);self.build_btn=btn('Создать проект CapCut','primary',self.start);self.build_btn.setMinimumHeight(50);control.addWidget(self.build_btn,1)
@@ -1077,6 +1076,7 @@ class MainWindow(QMainWindow):
         old=self.pages.widget(index)
         # Dialog contents are embedded as a normal QWidget, not a separate window.
         w.setWindowFlags(Qt.Widget);w.setAttribute(Qt.WA_TranslucentBackground,False)
+        w.setMinimumSize(0,0)
         for title in w.findChildren(TitleBar):title.hide()
         scroll=QScrollArea();scroll.setWidgetResizable(True);scroll.setWidget(w)
         self.pages.removeWidget(old);self.pages.insertWidget(index,scroll);old.deleteLater()
@@ -1309,6 +1309,9 @@ class MainWindow(QMainWindow):
         SETTINGS['theme']='dark' if index else 'light'
         apply_appearance(bool(index))
         self.refresh_icons()
+        if self.media_page:self.media_page.grid.viewport().update()
+        if self.subtitle_page:self.subtitle_page.wave.update()
+        if self.manual_page:self.manual_page.wave.update()
         save_settings(SETTINGS)
 
     def pick_media_root(self):

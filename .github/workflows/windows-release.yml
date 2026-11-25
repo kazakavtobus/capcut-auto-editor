@@ -60,6 +60,25 @@ jobs:
         run: |
           python -c "from PySide6.QtWidgets import QApplication; from app import ManualSongDialog,SongLibraryDialog,MainWindow; from studio_ui import MediaDialog,ProfilesDialog; import tempfile; q=QApplication([]); d=ManualSongDialog(None); x=SongLibraryDialog(None); w=MainWindow(); tmp=tempfile.TemporaryDirectory(); m=MediaDialog(None,tmp.name); p=ProfilesDialog(None,tmp.name); assert len(p.states)==2; p.close(); assert d.table.columnCount()==3; assert x.table.columnCount()==4; assert m.table.columnCount()==6; assert len(w.counts)==2; w.change_page(3); assert w.media_page.grid is not None; w.change_page(4); assert w.songs_page.list is not None; w.change_page(6); assert len(w.profiles_page.states)==2; w.change_page(0); m.close(); d.close(); x.close(); w.close(); tmp.cleanup(); print('Studio UI OK')"
           if ($LASTEXITCODE -ne 0) { throw 'Manual song library UI smoke test failed' }
+      - name: Visual regression - themes, responsive pages, counters and gallery
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          STUDIO_VISUAL_DIR: visual-results
+        run: |
+          python test_visual.py
+          if ($LASTEXITCODE -ne 0) { throw 'Visual regression failed' }
+          $env:QT_SCALE_FACTOR = '1.5'
+          $env:STUDIO_VISUAL_DIR = 'visual-results/scale-150'
+          python test_visual.py
+          if ($LASTEXITCODE -ne 0) { throw 'High DPI visual regression failed' }
+      - name: Upload visual test screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Studio-Visual-Regression
+          path: visual-results/
+          if-no-files-found: ignore
       - name: Build PyInstaller app (no private templates or personal files)
         shell: pwsh
         run: |
