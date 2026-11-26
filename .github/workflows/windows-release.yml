@@ -84,6 +84,9 @@ jobs:
           $errors = $null; $tokens = $null
           [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'assets/capcut_export.ps1'),[ref]$tokens,[ref]$errors) | Out-Null
           if ($errors) { throw ($errors | Out-String) }
+          $errors = $null; $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'assets/capcut_visual_export.ps1'),[ref]$tokens,[ref]$errors) | Out-Null
+          if ($errors) { throw ($errors | Out-String) }
           python -m py_compile native_export.py app.py manual_lyrics.py studio_media.py studio_pipeline.py studio_ui.py studio_profiles.py desktop_ui.py composition_preview.py builder.py
           if ($LASTEXITCODE -ne 0) { throw 'Python compilation failed' }
           python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics test_studio test_telegram_delivery test_native_export test_export_names -v

@@ -4,6 +4,12 @@ from unittest.mock import patch
 import native_export as n
 
 class NativeExportTests(unittest.TestCase):
+    def test_visual_fallback_only_before_export_actions(self):
+        self.assertTrue(n.visual_fallback_allowed('start','STAGE: open exact project | missing'))
+        self.assertTrue(n.visual_fallback_allowed('start','STAGE: find editor export button | missing'))
+        self.assertFalse(n.visual_fallback_allowed('start','STAGE: confirm native export | error'))
+        self.assertFalse(n.visual_fallback_allowed('start','STAGE: output folder | error'))
+        self.assertFalse(n.visual_fallback_allowed('close','STAGE: open exact project | missing'))
     def test_partial_batch_keeps_completed(self):
         def export(p,s):
             if p=='b':raise n.ExportError('UIA unavailable')

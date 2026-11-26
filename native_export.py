@@ -45,6 +45,17 @@ def verify_mp4(path,duration):
     except Exception as exc:raise ExportError('MP4 ещё не завершён или повреждён.') from exc
     return p
 
+def visual_fallback_allowed(mode,stderr):
+    # Never retry automatically after an export may already have started.
+    return mode=='start' and any(line.startswith((
+        'STAGE: open exact project |','STAGE: find editor export button |'
+    )) for line in stderr.splitlines())
+
+def _run_export_script(script,data,timeout):
+    return subprocess.run(['powershell.exe','-NoLogo','-NoProfile','-NonInteractive','-STA','-ExecutionPolicy','Bypass','-File',str(script)],
+        input=data+'\n',text=True,encoding='utf-8',errors='replace',capture_output=True,timeout=timeout,
+        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+
 def native_command(project,folder='',mode='start'):
     if sys.platform!='win32':raise ExportError('Автоэкспорт CapCut доступен только на Windows.')
     script=Path(__file__).resolve().parent/'assets'/'capcut_export.ps1'
@@ -59,18 +70,30 @@ def native_command(project,folder='',mode='start'):
     except (OSError,ValueError,AttributeError):pass
     data=json.dumps({'project':name,'folder':str(folder),'mode':mode},ensure_ascii=True)
     try:
-        proc=subprocess.run(['powershell.exe','-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(script)],
-            input=data+'\n',text=True,encoding='utf-8',errors='replace',capture_output=True,timeout=260,
-            creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        proc=_run_export_script(script,data,260)
     except (OSError,subprocess.TimeoutExpired) as exc:
         raise ExportError('Не удалось запустить управление CapCut. Открой нужный проект вручную.') from exc
     expected='EXPORT_STARTED' if mode=='start' else 'CLOSE_ATTEMPTED'
+    native_stderr=proc.stderr
     if proc.returncode or expected not in proc.stdout:
+        visual=script.with_name('capcut_visual_export.ps1')
+        if visual.is_file() and visual_fallback_allowed(mode,native_stderr):
+            try:
+                proc=_run_export_script(visual,data,180)
+                if proc.returncode==0 and expected in proc.stdout:return
+                visual_stderr=proc.stderr
+            except (OSError,subprocess.TimeoutExpired) as exc:
+                visual_stderr='STAGE: visual execution | '+str(exc)
+            report_text='UI Automation:\n'+native_stderr+'\nVisual fallback:\n'+visual_stderr
+            first=next((line for line in visual_stderr.splitlines() if line.startswith('STAGE:')),visual_stderr[:500] or 'Visual fallback did not confirm export')
+        else:
+            report_text=native_stderr
+            first=next((line for line in native_stderr.splitlines() if line.startswith('STAGE:')),native_stderr.splitlines()[0] if native_stderr.splitlines() else 'Нет ответа UI Automation')
         report=LOG_DIR/'capcut-export.txt'
         report.parent.mkdir(parents=True,exist_ok=True)
-        report.write_text('Project: '+str(project)+'\nMode: '+mode+'\nExit code: '+str(proc.returncode)+'\n'+proc.stderr[:50000],encoding='utf-8')
-        first=next((line for line in proc.stderr.splitlines() if line.startswith('STAGE:')),proc.stderr.splitlines()[0] if proc.stderr.splitlines() else 'Нет ответа UI Automation')
+        report.write_text('Project: '+str(project)+'\nMode: '+mode+'\nExit code: '+str(proc.returncode)+'\n'+report_text[:50000],encoding='utf-8')
         raise ExportError('CapCut не подтвердил действие.\n'+first[:500]+'\nДиагностика: '+str(report))
+
 
 def wait_export(path,duration,timeout=900):
     deadline=time.monotonic()+timeout;last=None;stable=0;reason='Файл не появился.'
