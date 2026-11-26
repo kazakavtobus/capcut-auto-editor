@@ -33,7 +33,7 @@ from studio_ui import MediaDialog, ProjectsDialog, ProfilesDialog, theme_style
 from desktop_ui import MediaPage, SongsPage, Ring, ProjectCount, icon, apply_appearance, panel
 from composition_preview import CompositionPreview
 from account_names import account_name,validate_account_name
-from native_export import export_batch,receipt as export_receipt,verify_mp4
+from native_export import export_batch,receipt as export_receipt,verify_mp4,file_digest
 from telegram_delivery import load_config as load_telegram,save_config as save_telegram,discover as discover_telegram,send_export,caption as telegram_caption,chat_ids,validate_token
 from subtitle_editor import _project_data, apply_changes
 from diagnostics import install_crash_logger, report_exception, LOG_FILE
@@ -304,7 +304,7 @@ class DeliveryBatchWorker(QThread):
             for row in self.rows:
                 self.update.emit('Отгрузка: '+row['song'])
                 try:
-                    if export_receipt(row['project'])!=row:raise ValueError('Проект изменён после экспорта.')
+                    if file_digest(row['path'])!=row.get('export_sha256'):raise ValueError('MP4 изменён после экспорта.')
                     verify_mp4(row['path'],row['duration'])
                     result=send_export(self.token,self.chats,row['path'],self.settings,row['account'],row['song'],self.update.emit)
                     results.extend(row['song']+' · '+cid+': '+state for cid,state in result)

@@ -71,18 +71,23 @@ def wait_export(path,duration,timeout=900):
         time.sleep(1)
     raise ExportError('Экспорт не подтверждён: '+reason)
 
+def file_digest(path):
+    h=hashlib.sha256()
+    with Path(path).open('rb') as f:
+        for chunk in iter(lambda:f.read(1024*1024),b''):h.update(chunk)
+    return h.hexdigest()
+
 def receipt(project):
     try:
         r=json.loads((Path(project)/'AutoAssets'/'export.json').read_text(encoding='utf-8'))
         if Path(r['path']).is_file() and r.get('account') in ('1','2') and isinstance(r.get('duration'),int):
-            if r.get('draft_sha256')!=hashlib.sha256((Path(project)/'draft_content.json').read_bytes()).hexdigest():return None
             return r
     except (OSError,ValueError,KeyError,TypeError):pass
     return None
 
 def export_one(project,settings,start=native_command,wait=wait_export):
     info=project_info(project);existing=receipt(project)
-    if existing:
+    if existing and existing.get('draft_sha256')==info['draft_sha256']:
         try:verify_mp4(existing['path'],info['duration']);return existing
         except ExportError:pass
     folder=export_root(settings)/uuid.uuid4().hex
@@ -91,7 +96,7 @@ def export_one(project,settings,start=native_command,wait=wait_export):
     p=wait(folder/'video.mp4',info['duration']);verify_mp4(p,info['duration'])
     # CapCut may save the draft during export; retain its actual final fingerprint.
     info['draft_sha256']=hashlib.sha256((Path(project)/'draft_content.json').read_bytes()).hexdigest()
-    row=dict(info,path=str(Path(p).resolve()))
+    row=dict(info,path=str(Path(p).resolve()),export_sha256=file_digest(p))
     dst=Path(project)/'AutoAssets'/'export.json';tmp=dst.with_suffix('.tmp')
     tmp.write_text(json.dumps(row,ensure_ascii=False,indent=2),encoding='utf-8');tmp.replace(dst)
     return row

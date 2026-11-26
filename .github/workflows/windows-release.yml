@@ -8,6 +8,9 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: write
 jobs:
@@ -180,6 +183,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if ($env:GITHUB_REF -eq 'refs/heads/main') {
+            $head = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha'
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot check main branch' }
+            if ($head -ne $env:GITHUB_SHA) { Write-Host 'Superseded build; not publishing'; exit 0 }
+          }
           $version = python -c "from version import VERSION; print(VERSION)"
           $tag = "v$version"
           $installer = 'dist/release/CapCutAutoEditor_Setup.exe'
