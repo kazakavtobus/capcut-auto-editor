@@ -139,7 +139,11 @@ class ProjectsDialog(QDialog):
         for i,r in enumerate(self.rows):
             for j,t in enumerate((Path(r['path']).name,account_name(settings or {},r['account']),r['path'])):self.table.setItem(i,j,QTableWidgetItem(str(t)))
         l.addWidget(self.table,1);l.addWidget(button('Открыть папку проекта',self.open_project,True))
+        l.addWidget(button('Автоэкспорт 1080p / 30 FPS',self.export_project,False))
         l.addWidget(button('Отгрузить готовый MP4',self.deliver_project,False))
+    def export_project(self):
+        i=self.table.currentRow();host=self.window()
+        if 0<=i<len(self.rows) and hasattr(host,'begin_export'):host.begin_export([self.rows[i]['path']])
     def deliver_project(self):
         i=self.table.currentRow()
         host=self.window()

@@ -379,7 +379,7 @@ def settings_file() -> Path:
     return CONFIG_DIR/'settings.json'
 
 def load_settings() -> dict:
-    default={'provider':'local','api_key':'','theme':'light','media_root':'',
+    default={'provider':'local','api_key':'','theme':'light','media_root':'','auto_export':False,'export_root':'',
              'account_1_name':'Unison Muz','account_2_name':'Аккаунт 2',
              'projects_folder':str(Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) /
                       'CapCut'/'User Data'/'Projects'/'com.lveditor.draft'),

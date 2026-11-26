@@ -78,9 +78,12 @@ jobs:
       - name: Run unit tests and validate source
         shell: pwsh
         run: |
-          python -m py_compile app.py manual_lyrics.py studio_media.py studio_pipeline.py studio_ui.py studio_profiles.py desktop_ui.py composition_preview.py builder.py
+          $errors = $null; $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'assets/capcut_export.ps1'),[ref]$tokens,[ref]$errors) | Out-Null
+          if ($errors) { throw ($errors | Out-String) }
+          python -m py_compile native_export.py app.py manual_lyrics.py studio_media.py studio_pipeline.py studio_ui.py studio_profiles.py desktop_ui.py composition_preview.py builder.py
           if ($LASTEXITCODE -ne 0) { throw 'Python compilation failed' }
-          python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics test_studio test_telegram_delivery -v
+          python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics test_studio test_telegram_delivery test_native_export -v
           if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
       - name: Smoke test manual song library UI
         shell: pwsh
@@ -183,27 +186,38 @@ jobs:
           $checksum = "$installer.sha256"
           $localHash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           if ((Get-Content $checksum -Raw).Trim() -notmatch "^$localHash ") { throw 'Local checksum mismatch' }
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --draft --target "${{ github.sha }}" --generate-notes --title "CapCut Auto Editor $tag"
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot create draft release' }
+          $all = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot list releases' }
+          $release = $all | Where-Object { $_.tag_name -eq $tag } | Select-Object -First 1
+          if (!$release) {
+            $release = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases" -f tag_name=$tag -f target_commitish="$env:GITHUB_SHA" -f name="CapCut Auto Editor $tag" -F draft=true -F generate_release_notes=true | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or !$release.id) { throw 'Cannot create release draft' }
           }
-          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or !$release) { throw 'Cannot inspect release' }
+          $id=$release.id
           if ($release.draft) {
-            gh release upload $tag $installer $checksum --clobber
-            if ($LASTEXITCODE -ne 0) { throw 'Release upload failed' }
-            $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect uploaded assets' }
-            $exe = @($release.assets | Where-Object { $_.name -eq 'CapCutAutoEditor_Setup.exe' -and $_.state -eq 'uploaded' })
-            $sum = @($release.assets | Where-Object { $_.name -eq 'CapCutAutoEditor_Setup.exe.sha256' -and $_.state -eq 'uploaded' })
-            if ($exe.Count -ne 1 -or $sum.Count -ne 1 -or $exe[0].digest -ne "sha256:$localHash") { throw 'Incomplete release or installer digest mismatch' }
-            $sumHash = (Get-FileHash $checksum -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($sum[0].digest -ne "sha256:$sumHash") { throw 'Uploaded checksum digest mismatch' }
-            gh release edit $tag --draft=false
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot publish verified draft' }
+            foreach ($file in @($installer,$checksum)) {
+              $name=Split-Path $file -Leaf
+              $previous=@($release.assets | Where-Object { $_.name -eq $name })
+              foreach ($asset in $previous) {
+                gh api --method DELETE "repos/$env:GITHUB_REPOSITORY/releases/assets/$($asset.id)"
+                if ($LASTEXITCODE -ne 0) { throw 'Cannot remove failed draft asset' }
+              }
+              $url="https://uploads.github.com/repos/$env:GITHUB_REPOSITORY/releases/$id/assets?name=$name"
+              $mime=if ($name.EndsWith('.sha256')) {'text/plain'} else {'application/octet-stream'}
+              gh api --method POST $url -H "Content-Type: $mime" --input $file --silent
+              if ($LASTEXITCODE -ne 0) { throw "Cannot upload $name" }
+            }
+            $release=gh api "repos/$env:GITHUB_REPOSITORY/releases/$id" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect draft' }
+            $exe=@($release.assets | Where-Object { $_.name -eq 'CapCutAutoEditor_Setup.exe' -and $_.state -eq 'uploaded' })
+            $sum=@($release.assets | Where-Object { $_.name -eq 'CapCutAutoEditor_Setup.exe.sha256' -and $_.state -eq 'uploaded' })
+            $sumHash=(Get-FileHash $checksum -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($exe.Count -ne 1 -or $sum.Count -ne 1 -or $exe[0].digest -ne "sha256:$localHash" -or $sum[0].digest -ne "sha256:$sumHash") { throw 'Release digest mismatch' }
+            gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$id" -F draft=false --silent
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot publish draft' }
           } else {
-            $names = @($release.assets | Where-Object { $_.state -eq 'uploaded' } | ForEach-Object { $_.name })
-            if ('CapCutAutoEditor_Setup.exe' -notin $names -or 'CapCutAutoEditor_Setup.exe.sha256' -notin $names) { throw 'Existing public release is incomplete; repair without replacing installer' }
-            Write-Host "Release $tag already exists with both assets. Not replacing installer."
+            $names=@($release.assets | Where-Object { $_.state -eq 'uploaded' } | ForEach-Object { $_.name })
+            if ('CapCutAutoEditor_Setup.exe' -notin $names -or 'CapCutAutoEditor_Setup.exe.sha256' -notin $names) { throw 'Existing release incomplete' }
           }
+          $published=gh api "repos/$env:GITHUB_REPOSITORY/releases/$id" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $published.draft -or $published.assets.Count -lt 2) { throw 'Release publication not verified' }

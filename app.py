@@ -33,6 +33,7 @@ from studio_ui import MediaDialog, ProjectsDialog, ProfilesDialog, theme_style
 from desktop_ui import MediaPage, SongsPage, Ring, ProjectCount, icon, apply_appearance, panel
 from composition_preview import CompositionPreview
 from account_names import account_name,validate_account_name
+from native_export import export_batch,receipt as export_receipt,verify_mp4
 from telegram_delivery import load_config as load_telegram,save_config as save_telegram,discover as discover_telegram,send_export,caption as telegram_caption,chat_ids,validate_token
 from subtitle_editor import _project_data, apply_changes
 from diagnostics import install_crash_logger, report_exception, LOG_FILE
@@ -283,6 +284,33 @@ class UpdateWorker(QThread):
             report_exception(exc,'Ошибка обновления')
             self.failed.emit(str(exc))
 
+
+class ExportWorker(QThread):
+    ready=Signal(object)
+    update=Signal(str)
+    def __init__(self,projects,settings):
+        super().__init__();self.projects=list(projects);self.settings=dict(settings)
+    def run(self):
+        self.ready.emit(export_batch(self.projects,self.settings,self.update.emit))
+
+class DeliveryBatchWorker(QThread):
+    ready=Signal(object)
+    update=Signal(str)
+    def __init__(self,rows,token,chats,settings):
+        super().__init__();self.rows=rows;self.token=token;self.chats=chats;self.settings=dict(settings)
+    def run(self):
+        results=[]
+        try:
+            for row in self.rows:
+                self.update.emit('Отгрузка: '+row['song'])
+                try:
+                    verify_mp4(row['path'],row['duration'])
+                    result=send_export(self.token,self.chats,row['path'],self.settings,row['account'],row['song'],self.update.emit)
+                    results.extend(row['song']+' · '+cid+': '+state for cid,state in result)
+                except Exception:
+                    results.append(row['song']+': не удалось подтвердить или отправить MP4')
+        finally:self.token=''
+        self.ready.emit(results)
 
 class TelegramWorker(QThread):
     ready=Signal(object)
@@ -970,7 +998,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('CapCut Studio · '+VERSION)
         self.setWindowIcon(icon('logo','#3478f6',32))
         self.resize(1330,850);self.setMinimumSize(820,580)
-        self.worker=None;self.login_worker=None;self.update_worker=None;self.telegram_worker=None
+        self.worker=None;self.login_worker=None;self.update_worker=None;self.telegram_worker=None;self.export_worker=None;self.pending_exports=[];self._auto_export_requested=False
         self.last_project=None;self.audio='';self._updating=False
         self.media_page=None;self.songs_page=None;self.subtitle_page=None;self.manual_page=None
         self.profiles_page=None;self.projects_page=None
@@ -1053,6 +1081,10 @@ class MainWindow(QMainWindow):
             h.addWidget(n)
             pl.addLayout(h);profiles.addWidget(c,1)
         l.addLayout(profiles)
+        self.auto_export=QCheckBox('Автоэкспорт CapCut · 1080×1920 / 30 FPS (экспериментально)')
+        self.auto_export.setChecked(SETTINGS.get('auto_export',False));self.auto_export.toggled.connect(self.save_export_mode)
+        l.addWidget(self.auto_export)
+        l.addWidget(label('Только для проверенных песен. После экспорта отправка требует подтверждения.','muted',True))
         control=horizontal(space=10);self.build_btn=btn('Создать проект CapCut','primary',self.start);self.build_btn.setMinimumHeight(50);control.addWidget(self.build_btn,1)
         self.project_btn=btn('Последний проект','secondary',self.open_project_folder);self.project_btn.setEnabled(False);control.addWidget(self.project_btn);l.addLayout(control)
         self.stage=label('Ожидает запуска','muted');l.addWidget(self.stage)
@@ -1060,6 +1092,34 @@ class MainWindow(QMainWindow):
         self.progress=QProgressBar();self.progress.setRange(0,100);self.progress.setValue(0);l.addWidget(self.progress)
         for n in self.counts.values():n.valueChanged.connect(self.update_build_label)
         l.addStretch()
+
+    def save_export_mode(self,enabled):
+        SETTINGS['auto_export']=bool(enabled);save_settings(SETTINGS)
+
+    def begin_export(self,projects):
+        if self.busy() or not projects:return
+        self.export_worker=ExportWorker(projects,SETTINGS)
+        self.export_worker.update.connect(lambda msg:self.set_task(msg,None))
+        self.export_worker.ready.connect(self.export_finished)
+        self.set_task('Автоэкспорт CapCut · 1080p / 30 FPS',None)
+        self.export_worker.start()
+
+    def export_finished(self,result):
+        rows=result.get('rows',[])
+        self.change_page(9)
+        if result.get('error'):
+            self.set_task('Экспорт остановлен: '+result['error'],0)
+            self.tg_batch_status.setText('Готово: '+str(len(rows))+'; '+result['error']+'\nОставшиеся проекты доступны в истории.')
+        else:
+            self.set_task('Экспорт завершён: '+str(len(rows)),100)
+            self.tg_batch_status.setText('Готово к проверке: '+str(len(rows))+'. Отметь ролики и подтверди отправку.')
+        paths={r['path'] for r in rows}
+        for i,r in enumerate(self.export_rows):
+            self.export_table.item(i,0).setCheckState(Qt.Checked if r['path'] in paths else Qt.Unchecked)
+
+    def after_render_finished(self):
+        projects=self.pending_exports;self.pending_exports=[]
+        if projects:self.begin_export(projects)
 
     def _make_tasks_page(self):
         content=self.scroll_page();l=vertical(content,14,(30,26,30,26))
@@ -1071,7 +1131,7 @@ class MainWindow(QMainWindow):
     def _make_telegram_page(self):
         content=self.scroll_page();l=vertical(content,14,(24,22,24,22))
         l.addWidget(label('ТикТок Завод','heading'))
-        l.addWidget(label('Отгрузка готовых MP4 в Telegram без сжатия. Пока экспорт из CapCut выполняется вручную.','muted',True))
+        l.addWidget(label('Отгрузка готовых MP4 в Telegram без сжатия. Отправка только после твоего подтверждения.','muted',True))
         config=load_telegram()
         c=card();cl=vertical(c,10,(18,16,18,16))
         cl.addWidget(label('ПОДКЛЮЧЕНИЕ БОТА','micro'))
@@ -1098,7 +1158,51 @@ class MainWindow(QMainWindow):
         self.tg_song.textChanged.connect(self.telegram_preview);self.tg_account.currentIndexChanged.connect(self.telegram_preview)
         self.tg_send=btn('Отправить готовый ролик','primary',self.telegram_send);cl.addWidget(self.tg_send)
         self.tg_status=QLabel('До 50 МБ на файл.');self.tg_status.setTextFormat(Qt.PlainText);self.tg_status.setWordWrap(True);cl.addWidget(self.tg_status)
-        l.addWidget(c);l.addStretch();self.telegram_preview()
+        l.addWidget(c)
+        review=card();rl=vertical(review,10,(18,16,18,16))
+        rl.addWidget(label('ГОТОВЫЕ ЭКСПОРТЫ · 1080P / 30 FPS','micro'))
+        rl.addWidget(label('Отметь проверенные ролики. Ничего не отправляется автоматически.','muted',True))
+        self.export_rows=[]
+        self.export_table=QTableWidget(0,4);self.export_table.setHorizontalHeaderLabels(['✓','АККАУНТ','ПЕСНЯ','MP4'])
+        self.export_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.export_table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch)
+        self.export_table.setColumnWidth(0,38);self.export_table.setColumnWidth(1,115);self.export_table.setColumnWidth(3,95)
+        self.export_table.setMinimumHeight(200);rl.addWidget(self.export_table)
+        h=horizontal(space=8);h.addWidget(btn('Открыть ролик','secondary',self.open_export_video));h.addWidget(btn('Обновить','secondary',self.refresh_export_list));rl.addLayout(h)
+        self.tg_batch_send=btn('Подтвердить и отправить выбранные','primary',self.send_export_selection);rl.addWidget(self.tg_batch_send)
+        self.tg_batch_status=label('','muted',True);self.tg_batch_status.setTextFormat(Qt.PlainText);rl.addWidget(self.tg_batch_status)
+        l.addWidget(review);l.addStretch();self.telegram_preview()
+
+    def refresh_export_list(self):
+        selected={r['path'] for i,r in enumerate(self.export_rows) if self.export_table.item(i,0) and self.export_table.item(i,0).checkState()==Qt.Checked}
+        self.export_rows=[]
+        for project in MediaLibrary(SETTINGS.get('media_root') or None).projects():
+            row=export_receipt(project['path'])
+            if row:self.export_rows.append(row)
+        self.export_table.setRowCount(len(self.export_rows))
+        for i,r in enumerate(self.export_rows):
+            check=QTableWidgetItem();check.setFlags(Qt.ItemIsEnabled|Qt.ItemIsSelectable|Qt.ItemIsUserCheckable)
+            check.setCheckState(Qt.Checked if r['path'] in selected else Qt.Unchecked);self.export_table.setItem(i,0,check)
+            for j,text in enumerate((account_name(SETTINGS,r['account']),r['song'],Path(r['path']).name),1):
+                self.export_table.setItem(i,j,QTableWidgetItem(str(text)))
+
+    def open_export_video(self):
+        i=self.export_table.currentRow()
+        if 0<=i<len(self.export_rows):QDesktopServices.openUrl(QUrl.fromLocalFile(self.export_rows[i]['path']))
+
+    def send_export_selection(self):
+        if self.busy():return
+        rows=[r for i,r in enumerate(self.export_rows) if self.export_table.item(i,0).checkState()==Qt.Checked]
+        if not rows:
+            QMessageBox.information(self,'Отгрузка','Отметь готовые ролики в таблице.');return
+        try:token=validate_token(self.tg_token.text());ids=chat_ids(self.tg_chats.text())
+        except Exception:QMessageBox.warning(self,'Отгрузка','Настрой токен и Chat ID.');return
+        if QMessageBox.question(self,'Подтвердить отгрузку',f'Отправить {len(rows)} роликов в Telegram?\nЧаты: '+', '.join(ids))!=QMessageBox.Yes:return
+        self.telegram_controls(False);self.tg_batch_status.setText('Отправка…')
+        self.telegram_worker=DeliveryBatchWorker(rows,token,', '.join(ids),SETTINGS)
+        self.telegram_worker.update.connect(self.tg_batch_status.setText)
+        self.telegram_worker.ready.connect(lambda results:self.tg_batch_status.setText('\n'.join(results)))
+        self.telegram_worker.finished.connect(lambda:self.telegram_controls(True));self.telegram_worker.start()
 
     def telegram_preview(self,*args):
         self.tg_preview.setText(telegram_caption(SETTINGS,self.tg_account.currentData() or '1',self.tg_song.text(),'номер_ролика'))
@@ -1134,7 +1238,7 @@ class MainWindow(QMainWindow):
         self.tg_status.setText('Подключение сохранено на этом компьютере.')
 
     def telegram_controls(self,enabled):
-        for w in (self.tg_token,self.tg_chats,self.tg_find,self.tg_save,self.tg_send,self.tg_account,self.tg_song):w.setEnabled(enabled)
+        for w in (self.tg_token,self.tg_chats,self.tg_find,self.tg_save,self.tg_send,self.tg_batch_send,self.tg_account,self.tg_song):w.setEnabled(enabled)
 
     def telegram_find(self):
         if self.busy():return
@@ -1195,7 +1299,7 @@ class MainWindow(QMainWindow):
         self.task_summary.setText(msg);self.log.append('• '+msg)
 
     def busy(self):
-        workers=[self.worker,self.update_worker,self.telegram_worker]
+        workers=[self.worker,self.update_worker,self.telegram_worker,self.export_worker]
         for p in (self.media_page,self.profiles_page,self.subtitle_page):
             if p is not None:
                 workers.extend([getattr(p,'worker',None),getattr(p,'alignment_worker',None)])
@@ -1271,6 +1375,11 @@ class MainWindow(QMainWindow):
         self.media_root=QLineEdit(SETTINGS.get('media_root',''));self.media_root.setPlaceholderText('По умолчанию: AppData / CapCutAutoEditor / studio')
         sl.addWidget(self.media_root);sl.addWidget(btn('Выбрать папку медиатеки','secondary',self.pick_media_root))
         sl.addWidget(label('Другая папка создаёт отдельную базу и историю. Для переноса копируй всю медиатеку.','muted',True));l.addWidget(storage)
+        storage_export=card();el=vertical(storage_export,10,(23,20,23,20))
+        el.addWidget(label('ПАПКА ЭКСПОРТА MP4','micro'))
+        self.export_folder=QLineEdit(SETTINGS.get('export_root',''))
+        self.export_folder.setPlaceholderText('По умолчанию: AppData / CapCutAutoEditor / exports')
+        el.addWidget(self.export_folder);el.addWidget(btn('Выбрать папку экспорта','secondary',self.pick_export_folder));l.addWidget(storage_export)
         l.addWidget(btn('Сохранить настройки','primary',self.store_settings),0,Qt.AlignRight)
         l.addStretch()
 
@@ -1363,7 +1472,7 @@ class MainWindow(QMainWindow):
             self.projects_page=self.embed(7,ProjectsDialog(self,SETTINGS.get('media_root'),SETTINGS))
         if index==9:
             for i,a in enumerate(('1','2')):self.tg_account.setItemText(i,account_name(SETTINGS,a))
-            self.telegram_preview()
+            self.telegram_preview();self.refresh_export_list()
         self.pages.setCurrentIndex(index)
         self.breadcrumb.setText(self.TITLES[index])
         for i,b in self.nav.items():b.setChecked(i==index)
@@ -1431,7 +1540,7 @@ class MainWindow(QMainWindow):
         previous_root=SETTINGS.get('media_root','')
         for a,name in names.items():SETTINGS['account_'+a+'_name']=name
         SETTINGS.update({'provider':'local','api_key':'','projects_folder':p,
-                         'media_root':self.media_root.text().strip(),'theme':'dark' if self.theme.currentIndex() else 'light',
+                         'media_root':self.media_root.text().strip(),'export_root':self.export_folder.text().strip(),'theme':'dark' if self.theme.currentIndex() else 'light',
                          'whisper_model':self.model.currentText(),
                          'separate_vocals':self.demucs.isChecked()})
         save_settings(SETTINGS)
@@ -1454,6 +1563,10 @@ class MainWindow(QMainWindow):
         if self.manual_page:self.manual_page.wave.update()
         save_settings(SETTINGS)
 
+    def pick_export_folder(self):
+        p=QFileDialog.getExistingDirectory(self,'Папка готовых MP4')
+        if p:self.export_folder.setText(p)
+
     def pick_media_root(self):
         p=QFileDialog.getExistingDirectory(self,'Папка медиатеки')
         if p:self.media_root.setText(p)
@@ -1472,6 +1585,13 @@ class MainWindow(QMainWindow):
         if not Path(SETTINGS.get('projects_folder','')).is_dir():
             QMessageBox.warning(self,'Нет папки проектов','В настройках укажи папку проектов CapCut.')
             self.change_page(1);return
+        self._auto_export_requested=self.auto_export.isChecked()
+        if self._auto_export_requested:
+            try:record=SongLibrary().load(Path(self.audio))
+            except Exception:record=None
+            if not record or not record.get('verified') or not record.get('rows'):
+                QMessageBox.information(self,'Проверь песню','Для автоэкспорта сначала сохрани проверенный текст и таймкоды в библиотеке. Можно отключить автоэкспорт для чернового монтажа.')
+                self.open_manual(self.audio);return
         counts={a:n.value() for a,n in self.counts.items()}
         if not sum(counts.values()):
             QMessageBox.information(self,'Аккаунт','Выбери количество проектов.');return
@@ -1489,6 +1609,7 @@ class MainWindow(QMainWindow):
         self.worker.update.connect(self.render_status)
         self.worker.result.connect(self.finish)
         self.worker.failed.connect(self.failed)
+        self.worker.finished.connect(self.after_render_finished)
         self.worker.start()
 
     def render_status(self,msg):
@@ -1513,6 +1634,9 @@ class MainWindow(QMainWindow):
         self.note(f"Проект собран: {info.get('clips',0)} видеофрагментов, {info.get('captions',0)} субтитров.")
         self.set_task('Готово проектов: '+str(info.get('total',1)),100)
         self.refresh_dashboard()
+        if self._auto_export_requested:
+            self.pending_exports=info.get('projects',[str(path)])
+            return
         QMessageBox.information(self,'Проект готов',
            f"Создано проектов: {info.get('total',1)}. Перезапусти CapCut, чтобы увидеть их.\n\n"+'\n'.join(info.get('projects',[str(path)])))
 
