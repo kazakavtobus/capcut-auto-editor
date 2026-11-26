@@ -304,6 +304,7 @@ class DeliveryBatchWorker(QThread):
             for row in self.rows:
                 self.update.emit('Отгрузка: '+row['song'])
                 try:
+                    if export_receipt(row['project'])!=row:raise ValueError('Проект изменён после экспорта.')
                     verify_mp4(row['path'],row['duration'])
                     result=send_export(self.token,self.chats,row['path'],self.settings,row['account'],row['song'],self.update.emit)
                     results.extend(row['song']+' · '+cid+': '+state for cid,state in result)

@@ -26,6 +26,7 @@ class NativeExportTests(unittest.TestCase):
     def test_receipt_written_only_after_verified_export(self):
         with tempfile.TemporaryDirectory() as tmp:
             project=Path(tmp)/'project';(project/'AutoAssets').mkdir(parents=True)
+            (project/'draft_content.json').write_text('{}',encoding='utf-8')
             row={'project':str(project),'account':'1','song':'Song','duration':1000000}
             with patch.object(n,'project_info',return_value=row),patch.object(n,'verify_mp4',side_effect=n.ExportError('invalid')):
                 def start(p,folder):(folder/'video.mp4').write_bytes(b'fake')
@@ -34,3 +35,5 @@ class NativeExportTests(unittest.TestCase):
             with patch.object(n,'project_info',return_value=row),patch.object(n,'verify_mp4',side_effect=lambda p,d:Path(p)):
                 result=n.export_one(project,{'export_root':tmp},start=start,wait=lambda p,d:p)
                 self.assertEqual(n.receipt(project),result)
+                (project/'draft_content.json').write_text('{"changed":true}',encoding='utf-8')
+                self.assertIsNone(n.receipt(project))

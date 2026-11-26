@@ -204,8 +204,8 @@ jobs:
               }
               $url="https://uploads.github.com/repos/$env:GITHUB_REPOSITORY/releases/$id/assets?name=$name"
               $mime=if ($name.EndsWith('.sha256')) {'text/plain'} else {'application/octet-stream'}
-              gh api --method POST $url -H "Content-Type: $mime" --input $file --silent
-              if ($LASTEXITCODE -ne 0) { throw "Cannot upload $name" }
+              $uploaded=Invoke-WebRequest -Uri $url -Method Post -Headers @{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'} -ContentType $mime -InFile $file -TimeoutSec 600
+              if ($uploaded.StatusCode -ne 201) { throw "Cannot upload $name" }
             }
             $release=gh api "repos/$env:GITHUB_REPOSITORY/releases/$id" | ConvertFrom-Json
             if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect draft' }

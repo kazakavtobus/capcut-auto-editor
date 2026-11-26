@@ -1,4 +1,4 @@
-$ErrorActionPreference='Stop'
+﻿$ErrorActionPreference='Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $req=[Console]::In.ReadLine() | ConvertFrom-Json
@@ -7,6 +7,9 @@ $root=[System.Windows.Automation.AutomationElement]::RootElement
 $all=[System.Windows.Automation.Condition]::TrueCondition
 $child=[System.Windows.Automation.TreeScope]::Children
 $desc=[System.Windows.Automation.TreeScope]::Descendants
+$script:scopePid=0
+$script:scopeHandle=0
+$script:dialogHandles=@()
 function Windows {
     $ids=@(Get-Process -Name CapCut -ErrorAction SilentlyContinue | ForEach-Object {$_.Id})
     @($root.FindAll($child,$all) | Where-Object {
@@ -15,6 +18,8 @@ function Windows {
 }
 function Elements {
     foreach($w in @(Windows)) {
+        if($script:scopePid -and $w.Current.ProcessId -ne $script:scopePid){continue}
+        if($script:scopeHandle -and $w.Current.NativeWindowHandle -ne $script:scopeHandle -and $script:dialogHandles -notcontains $w.Current.NativeWindowHandle){continue}
         $w
         foreach($e in $w.FindAll($desc,$all)) {
             try {if(!$e.Current.IsOffscreen -and $e.Current.IsEnabled){$e}} catch {}
@@ -75,8 +80,6 @@ try {
         if($w.Count -eq 1){
             # Close only the successfully exported project through its normal window pattern.
             # No forced process termination and no dismissal of save prompts.
-            $done=@(Find @('Done','Готово') @('ControlType.Button'))
-            if($done.Count -eq 1){Invoke-Control $done[0];Start-Sleep -Milliseconds 500}
             $p=$null
             if($w[0].TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$p)){$p.Close()}
         }
@@ -100,8 +103,16 @@ try {
         while(@(Project-Windows).Count -ne 1 -and [DateTime]::UtcNow -lt $until){Start-Sleep -Milliseconds 500}
     }
     if(@(Project-Windows).Count -ne 1){throw 'Cannot verify exact project window title. Open the intended project manually.'}
+    $target=@(Project-Windows)[0]
+    $script:scopePid=$target.Current.ProcessId
+    $script:scopeHandle=$target.Current.NativeWindowHandle
+    if(!$script:scopeHandle){throw 'Cannot identify the project window handle.'}
+    $before=@(Windows | ForEach-Object {$_.Current.NativeWindowHandle})
     $export=Unique @('Export','Экспорт','Экспортировать') @('ControlType.Button') 10
     Invoke-Control $export
+    Start-Sleep -Milliseconds 800
+    # Allow only the exact project window or a newly appeared dialog of its own process.
+    $script:dialogHandles=@(Windows | Where-Object {$_.Current.ProcessId -eq $script:scopePid -and $before -notcontains $_.Current.NativeWindowHandle} | ForEach-Object {$_.Current.NativeWindowHandle})
     Select-Option @('Resolution','Разрешение') @('1080P','1080p','1080 P')
     Select-Option @('Frame rate','Frame Rate','Частота кадров') @('30fps','30 fps','30 FPS','30')
     Select-Option @('Format','Формат') @('MP4','mp4')

@@ -1,5 +1,5 @@
 """Native CapCut export, validation, receipts. Never sends Telegram messages."""
-import json,os,subprocess,sys,time,uuid
+import hashlib,json,os,subprocess,sys,time,uuid
 from pathlib import Path
 from song_library import APPDATA,SongLibrary,project_song
 
@@ -10,7 +10,8 @@ def export_root(settings):
 
 def project_info(path):
     p=Path(path).resolve()
-    doc=json.loads((p/'draft_content.json').read_text(encoding='utf-8'))
+    draft=(p/'draft_content.json').read_bytes()
+    doc=json.loads(draft.decode('utf-8-sig'))
     duration=int(doc.get('duration',0))
     if not 0<duration<=180_000_000:raise ExportError('Не удалось проверить длительность проекта.')
     audio=project_song(p);record=SongLibrary().load(audio)
@@ -19,7 +20,7 @@ def project_info(path):
     src=json.loads((p/'AutoAssets'/'sources.json').read_text(encoding='utf-8'))
     account=str(src.get('account',''))
     if account not in ('1','2'):raise ExportError('Не определён аккаунт проекта.')
-    return {'project':str(p),'account':account,'song':Path(record.get('filename',audio.name)).stem,'duration':duration}
+    return {'project':str(p),'account':account,'song':Path(record.get('filename',audio.name)).stem,'duration':duration,'draft_sha256':hashlib.sha256(draft).hexdigest()}
 
 def verify_mp4(path,duration):
     import av
@@ -73,7 +74,9 @@ def wait_export(path,duration,timeout=900):
 def receipt(project):
     try:
         r=json.loads((Path(project)/'AutoAssets'/'export.json').read_text(encoding='utf-8'))
-        if Path(r['path']).is_file() and r.get('account') in ('1','2') and isinstance(r.get('duration'),int):return r
+        if Path(r['path']).is_file() and r.get('account') in ('1','2') and isinstance(r.get('duration'),int):
+            if r.get('draft_sha256')!=hashlib.sha256((Path(project)/'draft_content.json').read_bytes()).hexdigest():return None
+            return r
     except (OSError,ValueError,KeyError,TypeError):pass
     return None
 
@@ -86,6 +89,8 @@ def export_one(project,settings,start=native_command,wait=wait_export):
     folder.mkdir(parents=True,exist_ok=False)
     start(project,folder)
     p=wait(folder/'video.mp4',info['duration']);verify_mp4(p,info['duration'])
+    # CapCut may save the draft during export; retain its actual final fingerprint.
+    info['draft_sha256']=hashlib.sha256((Path(project)/'draft_content.json').read_bytes()).hexdigest()
     row=dict(info,path=str(Path(p).resolve()))
     dst=Path(project)/'AutoAssets'/'export.json';tmp=dst.with_suffix('.tmp')
     tmp.write_text(json.dumps(row,ensure_ascii=False,indent=2),encoding='utf-8');tmp.replace(dst)
