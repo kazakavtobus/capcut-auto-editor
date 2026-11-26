@@ -33,7 +33,8 @@ from studio_ui import MediaDialog, ProjectsDialog, ProfilesDialog, theme_style
 from desktop_ui import MediaPage, SongsPage, Ring, ProjectCount, icon, apply_appearance, panel
 from composition_preview import CompositionPreview
 from account_names import account_name,validate_account_name
-from native_export import export_batch,receipt as export_receipt,verify_mp4,file_digest
+from native_export import export_batch,receipt as export_receipt,verify_mp4,file_digest,export_root
+from export_names import manual_metadata
 from telegram_delivery import load_config as load_telegram,save_config as save_telegram,discover as discover_telegram,send_export,caption as telegram_caption,chat_ids,validate_token
 from subtitle_editor import _project_data, apply_changes
 from diagnostics import install_crash_logger, report_exception, LOG_FILE
@@ -1169,10 +1170,13 @@ class MainWindow(QMainWindow):
         l.addWidget(c)
         c=card();cl=vertical(c,10,(18,16,18,16))
         cl.addWidget(label('ГОТОВЫЙ РОЛИК','micro'))
+        cl.addWidget(label('Название песни и аккаунт определяются по выбранному MP4. При необходимости можно исправить вручную.','muted',True))
         self.tg_file=QLineEdit();self.tg_file.setReadOnly(True);self.tg_file.setPlaceholderText('Выбери экспортированный MP4')
         h=horizontal(space=8);h.addWidget(self.tg_file,1);h.addWidget(btn('Выбрать MP4','secondary',self.telegram_pick));cl.addLayout(h)
         self.tg_account=QComboBox()
+        self.tg_account.setPlaceholderText('Выбери аккаунт')
         for a in ('1','2'):self.tg_account.addItem(account_name(SETTINGS,a),a)
+        self.tg_account.setCurrentIndex(-1)
         cl.addWidget(self.tg_account)
         self.tg_song=QLineEdit();self.tg_song.setMaxLength(180);self.tg_song.setPlaceholderText('Название песни');cl.addWidget(self.tg_song)
         self.tg_preview=QLabel();self.tg_preview.setTextFormat(Qt.PlainText);self.tg_preview.setWordWrap(True);cl.addWidget(self.tg_preview)
@@ -1182,6 +1186,8 @@ class MainWindow(QMainWindow):
         l.addWidget(c)
         review=card();rl=vertical(review,10,(18,16,18,16))
         rl.addWidget(label('ГОТОВЫЕ ЭКСПОРТЫ · 1080P / 30 FPS','micro'))
+        self.export_location=label(str(export_root(SETTINGS)),'muted',True);self.export_location.setTextInteractionFlags(Qt.TextSelectableByMouse);rl.addWidget(self.export_location)
+        rl.addWidget(btn('Открыть папку готовых видео','secondary',self.open_export_folder))
         rl.addWidget(label('Отметь проверенные ролики. Ничего не отправляется автоматически.','muted',True))
         self.export_rows=[]
         self.export_table=QTableWidget(0,4);self.export_table.setHorizontalHeaderLabels(['✓','АККАУНТ','ПЕСНЯ','MP4'])
@@ -1194,7 +1200,14 @@ class MainWindow(QMainWindow):
         self.tg_batch_status=label('','muted',True);self.tg_batch_status.setTextFormat(Qt.PlainText);rl.addWidget(self.tg_batch_status)
         l.addWidget(review);l.addStretch();self.telegram_preview()
 
+    def open_export_folder(self):
+        try:
+            root=export_root(SETTINGS);root.mkdir(parents=True,exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
+        except OSError as exc:QMessageBox.warning(self,'Папка экспорта',str(exc))
+
     def refresh_export_list(self):
+        self.export_location.setText(str(export_root(SETTINGS)))
         selected={r['path'] for i,r in enumerate(self.export_rows) if self.export_table.item(i,0) and self.export_table.item(i,0).checkState()==Qt.Checked}
         self.export_rows=[]
         for project in MediaLibrary(SETTINGS.get('media_root') or None).projects():
@@ -1226,7 +1239,10 @@ class MainWindow(QMainWindow):
         self.telegram_worker.finished.connect(lambda:self.telegram_controls(True));self.telegram_worker.start()
 
     def telegram_preview(self,*args):
-        self.tg_preview.setText(telegram_caption(SETTINGS,self.tg_account.currentData() or '1',self.tg_song.text(),'номер_ролика'))
+        account=self.tg_account.currentData()
+        if account not in ('1','2'):
+            self.tg_preview.setText('Выбери аккаунт для этого ролика.');return
+        self.tg_preview.setText(telegram_caption(SETTINGS,account,self.tg_song.text(),'номер_ролика'))
 
     def open_delivery(self,project=None):
         self.change_page(9)
@@ -1246,10 +1262,18 @@ class MainWindow(QMainWindow):
 
     def telegram_pick(self):
         if self.busy():return
-        path,_=QFileDialog.getOpenFileName(self,'Готовый экспорт MP4','','Видео MP4 (*.mp4)')
+        root=export_root(SETTINGS)
+        previous=Path(self.tg_file.text()).parent if self.tg_file.text() else root
+        try:root.mkdir(parents=True,exist_ok=True)
+        except OSError:pass
+        path,_=QFileDialog.getOpenFileName(self,'Готовый экспорт MP4',str(previous if previous.is_dir() else root),'Видео MP4 (*.mp4)')
         if path:
             self.tg_file.setText(path)
-            if not self.tg_song.text().strip():self.tg_song.setText(Path(path).stem[:180])
+            account,song=manual_metadata(path,SETTINGS)
+            self.tg_account.setCurrentIndex(self.tg_account.findData(account) if account else -1)
+            self.tg_song.setText(song[:180])
+            self.tg_status.setText('Ролик выбран. Проверь название песни и аккаунт.' if account else 'Аккаунт не определён по имени файла. Выбери его вручную.')
+            self.telegram_preview()
 
     def telegram_save(self):
         if self.busy():return
@@ -1285,6 +1309,8 @@ class MainWindow(QMainWindow):
         except Exception:
             QMessageBox.warning(self,'ТикТок Завод','Укажи токен, Chat ID и готовый MP4.');return
         account=self.tg_account.currentData();song=self.tg_song.text().strip() or p.stem
+        if account not in ('1','2'):
+            QMessageBox.warning(self,'ТикТок Завод','Выбери аккаунт для этого ролика.');return
         if QMessageBox.question(self,'Подтверждение отгрузки','Отправить файл '+p.name+'\nАккаунт: '+account_name(SETTINGS,account)+'\nПолучатели: '+', '.join(ids)+'?')!=QMessageBox.Yes:return
         self.telegram_controls(False);self.tg_status.setText('Отправляю готовый MP4…')
         self.telegram_worker=TelegramWorker('send',token,', '.join(ids),str(p),dict(SETTINGS),account,song)
@@ -1400,7 +1426,7 @@ class MainWindow(QMainWindow):
         el.addWidget(label('ПАПКА ЭКСПОРТА MP4','micro'))
         self.export_folder=QLineEdit(SETTINGS.get('export_root',''))
         self.export_folder.setPlaceholderText('По умолчанию: AppData / CapCutAutoEditor / exports')
-        el.addWidget(self.export_folder);el.addWidget(btn('Выбрать папку экспорта','secondary',self.pick_export_folder));l.addWidget(storage_export)
+        el.addWidget(self.export_folder);el.addWidget(btn('Выбрать папку экспорта','secondary',self.pick_export_folder));el.addWidget(label('Все новые автоэкспорты сохраняются сюда с названием аккаунта и песни. Уже сохранённые файлы не перемещаются.','muted',True));l.addWidget(storage_export)
         l.addWidget(btn('Сохранить настройки','primary',self.store_settings),0,Qt.AlignRight)
         l.addStretch()
 

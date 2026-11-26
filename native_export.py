@@ -3,6 +3,7 @@ import hashlib,json,os,subprocess,sys,time,uuid
 from pathlib import Path
 from song_library import APPDATA,SongLibrary,project_song
 from diagnostics import report_exception,LOG_DIR
+from export_names import publish_export
 
 class ExportError(RuntimeError):pass
 
@@ -103,15 +104,20 @@ def export_one(project,settings,start=native_command,wait=wait_export):
     if existing and existing.get('draft_sha256')==info['draft_sha256']:
         try:verify_mp4(existing['path'],info['duration']);return existing
         except ExportError:pass
-    folder=export_root(settings)/uuid.uuid4().hex
+    root=export_root(settings)
+    folder=root/'.pending'/uuid.uuid4().hex
     folder.mkdir(parents=True,exist_ok=False)
     start(project,folder)
     p=wait(folder/'video.mp4',info['duration']);verify_mp4(p,info['duration'])
     # CapCut may save the draft during export; retain its actual final fingerprint.
     info['draft_sha256']=hashlib.sha256((Path(project)/'draft_content.json').read_bytes()).hexdigest()
-    row=dict(info,path=str(Path(p).resolve()),export_sha256=file_digest(p))
+    digest=file_digest(p)
+    p=publish_export(p,root,settings,info['account'],info['song'])
+    row=dict(info,path=str(p.resolve()),export_sha256=digest)
     dst=Path(project)/'AutoAssets'/'export.json';tmp=dst.with_suffix('.tmp')
     tmp.write_text(json.dumps(row,ensure_ascii=False,indent=2),encoding='utf-8');tmp.replace(dst)
+    try:folder.rmdir()
+    except OSError:pass
     return row
 
 def export_batch(projects,settings,progress=None,exporter=export_one,close=native_command):

@@ -1,5 +1,5 @@
 """Current application and release channel; change VERSION with each release tag."""
-VERSION = '8.1.8'
+VERSION = '8.1.9'
 # This is the intended *new* repository; create it on the linked GitHub account
 # before using the in-app updater. Public releases are required for anonymous downloads.
 REPOSITORY = 'kazakavtobus/capcut-auto-editor'

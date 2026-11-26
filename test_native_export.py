@@ -35,5 +35,7 @@ class NativeExportTests(unittest.TestCase):
             with patch.object(n,'project_info',return_value=row),patch.object(n,'verify_mp4',side_effect=lambda p,d:Path(p)):
                 result=n.export_one(project,{'export_root':tmp},start=start,wait=lambda p,d:p)
                 self.assertEqual(n.receipt(project),result)
+                self.assertEqual(Path(result['path']).parent,Path(tmp))
+                self.assertEqual(Path(result['path']).name,'Аккаунт 1 — Song.mp4')
                 (project/'draft_content.json').write_text('{"changed":true}',encoding='utf-8')
                 self.assertEqual(n.receipt(project),result)

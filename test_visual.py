@@ -61,6 +61,19 @@ class VisualTests(unittest.TestCase):
         self.assertEqual(w.account_titles['2'].text(),'Второй канал')
         w.change_page(6)
         self.assertEqual(w.profiles_page.titles['2'].text(),'Второй канал')
+        # Choosing a new export must overwrite the previous song and infer account.
+        w.change_page(9)
+        w.tg_song.setText('Старое название')
+        w.tg_account.setCurrentIndex(0)
+        sample=str(Path(ROOT.name)/'Аккаунт 2 — Ночной Хулиган - Сумасшедшая (TT).mp4')
+        with patch('app.QFileDialog.getOpenFileName',return_value=(sample,'')):
+            w.telegram_pick()
+        self.assertEqual(w.tg_account.currentData(),'2')
+        self.assertEqual(w.tg_song.text(),'Ночной Хулиган - Сумасшедшая (TT)')
+        with patch('app.QFileDialog.getOpenFileName',return_value=(str(Path(ROOT.name)/'Новая песня.mp4'),'')):
+            w.telegram_pick()
+        self.assertIsNone(w.tg_account.currentData())
+        self.assertEqual(w.tg_song.text(),'Новая песня')
         for dark in (False,True):
             theme='dark' if dark else 'light'
             w.theme.setCurrentIndex(int(dark));apply_appearance(dark)
