@@ -999,7 +999,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('CapCut Studio · '+VERSION)
         self.setWindowIcon(icon('logo','#3478f6',32))
         self.resize(1330,850);self.setMinimumSize(820,580)
-        self.worker=None;self.login_worker=None;self.update_worker=None;self.telegram_worker=None;self.export_worker=None;self.pending_exports=[];self._auto_export_requested=False
+        self.worker=None;self.login_worker=None;self.update_worker=None;self.telegram_worker=None;self.export_worker=None;self.pending_exports=[];self.retry_export_paths=[];self._auto_export_requested=False
         self.last_project=None;self.audio='';self._updating=False
         self.media_page=None;self.songs_page=None;self.subtitle_page=None;self.manual_page=None
         self.profiles_page=None;self.projects_page=None
@@ -1105,8 +1105,14 @@ class MainWindow(QMainWindow):
         self.set_task('Автоэкспорт CapCut · 1080p / 30 FPS',None)
         self.export_worker.start()
 
+    def retry_export(self):
+        if self.busy() or not self.retry_export_paths:return
+        self.begin_export(list(self.retry_export_paths))
+
     def export_finished(self,result):
         rows=result.get('rows',[])
+        self.retry_export_paths=list(result.get('remaining',[]))
+        self.retry_export_btn.setEnabled(bool(self.retry_export_paths))
         self.change_page(9)
         if result.get('error'):
             self.set_task('Экспорт остановлен: '+result['error'],0)
@@ -1140,6 +1146,8 @@ class MainWindow(QMainWindow):
         self.log=QTextEdit();self.log.setReadOnly(True);self.log.setMinimumHeight(320);self.log.setPlaceholderText('Здесь появятся этапы обработки.');l.addWidget(self.log,1)
         l.addWidget(btn('Открыть полный журнал ошибок','secondary',self.open_logs),0,Qt.AlignLeft)
         l.addWidget(btn('Скопировать журнал этой сессии','secondary',lambda:QApplication.clipboard().setText(self.log.toPlainText())),0,Qt.AlignLeft)
+        self.retry_export_btn=btn('Повторить оставшийся экспорт','secondary',self.retry_export)
+        self.retry_export_btn.setEnabled(False);l.addWidget(self.retry_export_btn,0,Qt.AlignLeft)
 
     def _make_telegram_page(self):
         content=self.scroll_page();l=vertical(content,14,(24,22,24,22))

@@ -48,10 +48,18 @@ def native_command(project,folder='',mode='start'):
     if sys.platform!='win32':raise ExportError('Автоэкспорт CapCut доступен только на Windows.')
     script=Path(__file__).resolve().parent/'assets'/'capcut_export.ps1'
     if not script.is_file():raise ExportError('Не найден модуль Windows UI Automation.')
-    data=json.dumps({'project':Path(project).name,'folder':str(folder),'mode':mode},ensure_ascii=True)
+    # Folder names are normally identical to display titles, but CapCut may
+    # retain a distinct draft_name in metadata. Use the saved display title.
+    name=Path(project).name
+    try:
+        meta=json.loads((Path(project)/'draft_meta_info.json').read_text(encoding='utf-8-sig'))
+        value=meta.get('draft_name')
+        if isinstance(value,str) and value.strip():name=value
+    except (OSError,ValueError,AttributeError):pass
+    data=json.dumps({'project':name,'folder':str(folder),'mode':mode},ensure_ascii=True)
     try:
         proc=subprocess.run(['powershell.exe','-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(script)],
-            input=data+'\n',text=True,encoding='utf-8',errors='replace',capture_output=True,timeout=200,
+            input=data+'\n',text=True,encoding='utf-8',errors='replace',capture_output=True,timeout=260,
             creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     except (OSError,subprocess.TimeoutExpired) as exc:
         raise ExportError('Не удалось запустить управление CapCut. Открой нужный проект вручную.') from exc

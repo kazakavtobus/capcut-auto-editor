@@ -1,5 +1,9 @@
 ﻿$ErrorActionPreference='Stop'
+[Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)
+$errWriter=New-Object System.IO.StreamWriter([Console]::OpenStandardError(),[System.Text.UTF8Encoding]::new($false))
+$errWriter.AutoFlush=$true
+[Console]::SetError($errWriter)
 $stage='initialization'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -27,6 +31,9 @@ function Elements {
             try {if(!$e.Current.IsOffscreen -and $e.Current.IsEnabled){$e}} catch {}
         }
     }
+}
+function Normal-Name([string]$name) {
+    return (($name.Normalize([System.Text.NormalizationForm]::FormKC) -replace '[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]','' -replace '[\u2010-\u2015\u2212]','-' -replace '\s+',' ').Trim())
 }
 function Find([string[]]$names,[string[]]$types) {
     @(Elements | Where-Object {
@@ -73,9 +80,46 @@ function Select-Option([string[]]$labels,[string[]]$options) {
     if(!($options -contains (Value $e))){throw ('Cannot verify '+$labels[0])}
 }
 function Project-Windows {
-    $titles=@($project,($project+' - CapCut'),('CapCut - '+$project),($project+' – CapCut'),('CapCut – '+$project))
-    @(Windows | Where-Object {$titles -contains $_.Current.Name.Trim()})
+    $titles=@($project,($project+' - CapCut'),('CapCut - '+$project),($project+' | CapCut'),('CapCut | '+$project))
+    $normalized=@($titles | ForEach-Object {Normal-Name $_})
+    @(Windows | Where-Object {$normalized -contains (Normal-Name $_.Current.Name)})
 }
+function Find-ProjectCards {
+    # CapCut builds expose project titles as Text/Custom elements as well as ListItem.
+    # Only accept exact normalized names, never choose another project by position.
+    $expected=Normal-Name $project
+    $walker=[System.Windows.Automation.TreeWalker]::ControlViewWalker
+    $cards=@{}
+    foreach($e in @(Elements)){
+        try {
+            if((Normal-Name $e.Current.Name) -ne $expected){continue}
+            $node=$e
+            for($depth=0;$depth -lt 5 -and $null -ne $node;$depth++){
+                if($node.Current.ControlType.ProgrammaticName -in @('ControlType.Window','ControlType.Pane')){break}
+                $pattern=$null
+                if($node.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){
+                    $key=$node.GetRuntimeId() -join ','
+                    $cards[$key]=$node;break
+                }
+                $node=$walker.GetParent($node)
+            }
+        } catch {}
+    }
+    @($cards.Values)
+}
+function Open-ExactProject {
+    $until=[DateTime]::UtcNow.AddSeconds(35)
+    do {
+        if(@(Project-Windows).Count -eq 1){return}
+        $cards=@(Find-ProjectCards)
+        if($cards.Count -eq 1){Invoke-Control $cards[0];return}
+        Start-Sleep -Milliseconds 700
+    } while([DateTime]::UtcNow -lt $until)
+    # If CapCut was left on its cached home page, request a restart instead of
+    # closing an editor with possibly unsaved changes or guessing a project.
+    throw 'Project card not found or ambiguous. Close CapCut normally, reopen it so the local list refreshes, open this exact project and retry export from Studio.'
+}
+
 try {
     if($req.mode -eq 'close'){
         $w=@(Project-Windows)
@@ -101,12 +145,11 @@ try {
     }
     $stage='open exact project'
     if(@(Project-Windows).Count -ne 1){
-        $open=Unique @($project) @('ControlType.ListItem','ControlType.DataItem','ControlType.Button','ControlType.Hyperlink') 10
-        Invoke-Control $open
+        Open-ExactProject
         $until=[DateTime]::UtcNow.AddSeconds(35)
         while(@(Project-Windows).Count -ne 1 -and [DateTime]::UtcNow -lt $until){Start-Sleep -Milliseconds 500}
     }
-    if(@(Project-Windows).Count -ne 1){throw 'Cannot verify exact project window title. Open the intended project manually.'}
+    if(@(Project-Windows).Count -ne 1){throw 'Cannot verify exact project window title. Open the intended project manually and retry; no export was started.'}
     $stage='find editor export button'
     $target=@(Project-Windows)[0]
     $script:scopePid=$target.Current.ProcessId
