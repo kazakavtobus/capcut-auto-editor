@@ -1111,6 +1111,8 @@ class MainWindow(QMainWindow):
         if result.get('error'):
             self.set_task('Экспорт остановлен: '+result['error'],0)
             self.tg_batch_status.setText('Готово: '+str(len(rows))+'; '+result['error']+'\nОставшиеся проекты доступны в истории.')
+            self.last_export_error=result['error']
+            QMessageBox.warning(self,'Автоэкспорт остановлен',result['error']+'\n\nПроекты сохранены. Раздел «Обработка» → журнал ошибок.')
         else:
             self.set_task('Экспорт завершён: '+str(len(rows)),100)
             self.tg_batch_status.setText('Готово к проверке: '+str(len(rows))+'. Отметь ролики и подтверди отправку.')
@@ -1119,8 +1121,17 @@ class MainWindow(QMainWindow):
             self.export_table.item(i,0).setCheckState(Qt.Checked if r['path'] in paths else Qt.Unchecked)
 
     def after_render_finished(self):
+        if not self.pending_exports:return
+        # finished can be delivered before the native thread has fully stopped.
+        # Keep the batch instead of silently discarding it when busy() is still true.
+        if self.worker is not None and self.worker.isRunning():
+            QTimer.singleShot(100,self.after_render_finished);return
         projects=self.pending_exports;self.pending_exports=[]
-        if projects:self.begin_export(projects)
+        if self.busy():
+            self.set_task('Автоэкспорт не запущен: другая задача уже выполняется. Проекты сохранены.',0)
+            QMessageBox.warning(self,'Автоэкспорт','Другая задача ещё выполняется. Повтори экспорт из раздела «Проекты».')
+            return
+        self.begin_export(projects)
 
     def _make_tasks_page(self):
         content=self.scroll_page();l=vertical(content,14,(30,26,30,26))
@@ -1128,6 +1139,7 @@ class MainWindow(QMainWindow):
         self.task_summary=label('Нет активных задач','cardHeading',True);l.addWidget(self.task_summary)
         self.log=QTextEdit();self.log.setReadOnly(True);self.log.setMinimumHeight(320);self.log.setPlaceholderText('Здесь появятся этапы обработки.');l.addWidget(self.log,1)
         l.addWidget(btn('Открыть полный журнал ошибок','secondary',self.open_logs),0,Qt.AlignLeft)
+        l.addWidget(btn('Скопировать журнал этой сессии','secondary',lambda:QApplication.clipboard().setText(self.log.toPlainText())),0,Qt.AlignLeft)
 
     def _make_telegram_page(self):
         content=self.scroll_page();l=vertical(content,14,(24,22,24,22))

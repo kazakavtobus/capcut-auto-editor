@@ -1,4 +1,6 @@
 ﻿$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)
+$stage='initialization'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $req=[Console]::In.ReadLine() | ConvertFrom-Json
@@ -85,6 +87,7 @@ try {
         }
         Write-Output 'CLOSE_ATTEMPTED';exit 0
     }
+    $stage='launch CapCut'
     if(@(Windows).Count -eq 0){
         $apps=Join-Path $env:LOCALAPPDATA 'CapCut\Apps'
         $exe=Join-Path $apps 'CapCut.exe'
@@ -96,6 +99,7 @@ try {
         $until=[DateTime]::UtcNow.AddSeconds(45)
         while(@(Windows).Count -eq 0 -and [DateTime]::UtcNow -lt $until){Start-Sleep -Milliseconds 500}
     }
+    $stage='open exact project'
     if(@(Project-Windows).Count -ne 1){
         $open=Unique @($project) @('ControlType.ListItem','ControlType.DataItem','ControlType.Button','ControlType.Hyperlink') 10
         Invoke-Control $open
@@ -103,6 +107,7 @@ try {
         while(@(Project-Windows).Count -ne 1 -and [DateTime]::UtcNow -lt $until){Start-Sleep -Milliseconds 500}
     }
     if(@(Project-Windows).Count -ne 1){throw 'Cannot verify exact project window title. Open the intended project manually.'}
+    $stage='find editor export button'
     $target=@(Project-Windows)[0]
     $script:scopePid=$target.Current.ProcessId
     $script:scopeHandle=$target.Current.NativeWindowHandle
@@ -113,15 +118,37 @@ try {
     Start-Sleep -Milliseconds 800
     # Allow only the exact project window or a newly appeared dialog of its own process.
     $script:dialogHandles=@(Windows | Where-Object {$_.Current.ProcessId -eq $script:scopePid -and $before -notcontains $_.Current.NativeWindowHandle} | ForEach-Object {$_.Current.NativeWindowHandle})
+    $stage='resolution 1080p'
     Select-Option @('Resolution','Разрешение') @('1080P','1080p','1080 P')
+    $stage='frame rate 30 fps'
     Select-Option @('Frame rate','Frame Rate','Частота кадров') @('30fps','30 fps','30 FPS','30')
+    $stage='MP4 format'
     Select-Option @('Format','Формат') @('MP4','mp4')
+    $stage='output filename'
     Set-Field @('Name','File name','Название','Имя','Имя файла') 'video'
+    $stage='output folder'
     Set-Field @('Export to','Export To','Save to','Экспорт в','Сохранить в','Путь экспорта') ([string]$req.folder)
+    $stage='confirm native export'
     $button=Unique @('Export','Экспорт','Экспортировать') @('ControlType.Button') 10
     Invoke-Control $button
     Write-Output 'EXPORT_STARTED'
 } catch {
-    [Console]::Error.WriteLine($_.Exception.Message)
+    [Console]::Error.WriteLine('STAGE: '+$stage+' | '+$_.Exception.Message)
+    try {
+        $ids=@(Get-Process -Name CapCut -ErrorAction SilentlyContinue | ForEach-Object {$_.Id})
+        [Console]::Error.WriteLine('CapCut process count: '+$ids.Count)
+        foreach($w in @(Windows)){
+            [Console]::Error.WriteLine('WINDOW: '+$w.Current.Name+' | '+$w.Current.ClassName)
+        }
+        # Read only the visible accessibility control labels and types, never input values.
+        $controls=@(Elements | Select-Object -First 180)
+        foreach($e in $controls){
+            try {
+                if($e.Current.ControlType.ProgrammaticName -in @('ControlType.Button','ControlType.ComboBox','ControlType.Edit','ControlType.ListItem','ControlType.DataItem','ControlType.MenuItem','ControlType.Window')){
+                    [Console]::Error.WriteLine('CONTROL: '+$e.Current.ControlType.ProgrammaticName+' | '+$e.Current.Name+' | '+$e.Current.AutomationId)
+                }
+            } catch {}
+        }
+    } catch {}
     exit 1
 }

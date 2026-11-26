@@ -2,6 +2,7 @@
 import hashlib,json,os,subprocess,sys,time,uuid
 from pathlib import Path
 from song_library import APPDATA,SongLibrary,project_song
+from diagnostics import report_exception,LOG_DIR
 
 class ExportError(RuntimeError):pass
 
@@ -56,7 +57,11 @@ def native_command(project,folder='',mode='start'):
         raise ExportError('Не удалось запустить управление CapCut. Открой нужный проект вручную.') from exc
     expected='EXPORT_STARTED' if mode=='start' else 'CLOSE_ATTEMPTED'
     if proc.returncode or expected not in proc.stdout:
-        raise ExportError('CapCut не подтвердил действие. Открой нужный проект; проверь настройки экспорта.\n'+proc.stderr[-600:])
+        report=LOG_DIR/'capcut-export.txt'
+        report.parent.mkdir(parents=True,exist_ok=True)
+        report.write_text('Project: '+str(project)+'\nMode: '+mode+'\nExit code: '+str(proc.returncode)+'\n'+proc.stderr[:50000],encoding='utf-8')
+        first=next((line for line in proc.stderr.splitlines() if line.startswith('STAGE:')),proc.stderr.splitlines()[0] if proc.stderr.splitlines() else 'Нет ответа UI Automation')
+        raise ExportError('CapCut не подтвердил действие.\n'+first[:500]+'\nДиагностика: '+str(report))
 
 def wait_export(path,duration,timeout=900):
     deadline=time.monotonic()+timeout;last=None;stable=0;reason='Файл не появился.'
@@ -106,8 +111,12 @@ def export_batch(projects,settings,progress=None,exporter=export_one,close=nativ
     for i,project in enumerate(projects,1):
         if progress:progress(f'Экспорт {i}/{len(projects)}: {Path(project).name}')
         try:rows.append(exporter(project,settings))
-        except Exception as exc:return {'rows':rows,'error':str(exc),'remaining':list(map(str,projects[i-1:]))}
+        except Exception as exc:
+            report_exception(exc,'Автоэкспорт CapCut · '+str(project))
+            return {'rows':rows,'error':str(exc),'remaining':list(map(str,projects[i-1:]))}
         if i<len(projects):
             try:close(project,mode='close')
-            except Exception as exc:return {'rows':rows,'error':str(exc),'remaining':list(map(str,projects[i:]))}
+            except Exception as exc:
+                report_exception(exc,'Переход к следующему проекту CapCut')
+                return {'rows':rows,'error':str(exc),'remaining':list(map(str,projects[i:]))}
     return {'rows':rows,'error':'','remaining':[]}
