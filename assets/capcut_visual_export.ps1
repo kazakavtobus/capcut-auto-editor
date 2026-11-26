@@ -11,6 +11,8 @@ $req=[Console]::In.ReadLine() | ConvertFrom-Json
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
 Add-Type @'
 using System;
 using System.Collections.Generic;
@@ -75,17 +77,75 @@ function Active-CapCut {
     if(!(CapCut-Pid $h)){throw 'CapCut must remain in the foreground during visual export.'}
     return $h
 }
+function Window-Info([IntPtr]$h) {
+    $r=New-Object VisualWin+RECT
+    if(![VisualWin]::GetWindowRect($h,[ref]$r)){return}
+    $native=[VisualWin]::Class($h)
+    $uia='';$id=''
+    try {
+        $element=[System.Windows.Automation.AutomationElement]::FromHandle($h)
+        if($null -ne $element){$uia=$element.Current.ClassName;$id=$element.Current.AutomationId}
+    } catch {}
+    $kind='unknown'
+    if($id -eq 'HomeWindow' -or $uia -like 'HomePageX_QMLTYPE_*' -or $native -like 'HomePageX_QMLTYPE_*'){$kind='home'}
+    elseif($id -eq 'MainWindow' -or $uia -like 'MainWindow_QMLTYPE_*' -or $native -like 'MainWindow_QMLTYPE_*'){$kind='editor'}
+    elseif(($native+' '+$uia) -match 'ToolTip|Splash|Tray'){$kind='auxiliary'}
+    [pscustomobject]@{Handle=$h;Kind=$kind;Native=$native;UIA=$uia;Id=$id;Width=($r.Right-$r.Left);Height=($r.Bottom-$r.Top);Minimized=[VisualWin]::IsIconic($h)}
+}
+function Candidate-Windows {
+    # QML accessibility class names are not necessarily Win32 class names.
+    # Also include UIA's top-level windows, using their real native handles.
+    $handles=@{}
+    foreach($h in [VisualWin]::Visible()){if(CapCut-Pid $h){$handles[$h.ToInt64()]=$h}}
+    try {
+        $root=[System.Windows.Automation.AutomationElement]::RootElement
+        $elements=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+        foreach($e in $elements){
+            try{
+                $h=[IntPtr]$e.Current.NativeWindowHandle
+                if($h -ne [IntPtr]::Zero -and (CapCut-Pid $h) -and [VisualWin]::IsWindowVisible($h)){$handles[$h.ToInt64()]=$h}
+            }catch{}
+        }
+    }catch{}
+    foreach($h in $handles.Values){
+        $info=Window-Info $h
+        if($null -ne $info){$info}
+    }
+}
 function Bring-CapCut {
     $h=[VisualWin]::GetForegroundWindow()
-    if(CapCut-Pid $h){return}
-    $wins=@([VisualWin]::Visible() | Where-Object {(CapCut-Pid $_) -and [VisualWin]::Class($_) -match '^(MainWindow|HomePageX)_QMLTYPE_'})
-    $editors=@($wins | Where-Object {[VisualWin]::Class($_) -like 'MainWindow_QMLTYPE_*'})
-    if($editors.Count -eq 1){$wins=$editors}
-    if($wins.Count -ne 1){throw 'Open the intended CapCut project or home window and retry.'}
-    if([VisualWin]::IsIconic($wins[0])){$null=[VisualWin]::ShowWindow($wins[0],9)}
-    $null=[VisualWin]::SetForegroundWindow($wins[0])
-    Start-Sleep -Milliseconds 500
-    $null=Active-CapCut
+    if(CapCut-Pid $h){
+        $info=Window-Info $h
+        if($info -and $info.Kind -ne 'auxiliary' -and $info.Width -ge 250 -and $info.Height -ge 250){return}
+    }
+    $all=@(Candidate-Windows)
+    foreach($w in $all){
+        [Console]::Error.WriteLine(('CANDIDATE: {0} | native={1} | UIA={2} | id={3} | {4}x{5} | minimized={6}' -f $w.Kind,$w.Native,$w.UIA,$w.Id,$w.Width,$w.Height,$w.Minimized))
+    }
+    $known=@($all | Where-Object {$_.Kind -in @('home','editor')})
+    $editors=@($known | Where-Object {$_.Kind -eq 'editor'})
+    if($editors.Count -eq 1){$known=$editors}
+    if($known.Count -eq 0){
+        $known=@($all | Where-Object {$_.Kind -eq 'unknown' -and $_.Width -ge 500 -and $_.Height -ge 300})
+    }
+    if($known.Count -eq 1){
+        $target=$known[0].Handle
+        if([VisualWin]::IsIconic($target)){$null=[VisualWin]::ShowWindow($target,9)}
+        $null=[VisualWin]::SetForegroundWindow($target)
+        Start-Sleep -Milliseconds 500
+    }
+    # Windows may deny focus to a background process. Allow a manual Alt+Tab,
+    # rather than clicking arbitrary windows or choosing an ambiguous project.
+    $until=[DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $h=[VisualWin]::GetForegroundWindow()
+        if(CapCut-Pid $h){
+            $info=Window-Info $h
+            if($info -and $info.Kind -ne 'auxiliary' -and $info.Width -ge 250 -and $info.Height -ge 250){return}
+        }
+        Start-Sleep -Milliseconds 500
+    } while([DateTime]::UtcNow -lt $until)
+    throw ('Cannot activate CapCut. Switch to its visible window with Alt+Tab during export and retry. Candidates: '+$all.Count)
 }
 function Read-Frame {
     $h=Active-CapCut
@@ -185,8 +245,9 @@ function Open-Dialog {
     Bring-CapCut
     $frame=Read-Frame
     if(@(Dialog-Title $frame).Count -eq 1){return $frame}
-    $cls=[VisualWin]::Class($frame.Handle)
-    if($cls -like 'HomePageX_QMLTYPE_*'){
+    $info=Window-Info $frame.Handle
+    $homeHeading=@(Matches $frame @('Проекты','Projects'))
+    if($info.Kind -eq 'home' -or ($info.Kind -eq 'unknown' -and $homeHeading.Count -eq 1)){
         $stageLocal='home project list'
         $heading=One (Matches $frame @('Проекты','Projects')) $stageLocal
         $items=@(foreach($line in $frame.Lines){
@@ -199,12 +260,14 @@ function Open-Dialog {
         do {
             Start-Sleep -Milliseconds 800
             $h=Active-CapCut
-            if([VisualWin]::Class($h) -like 'MainWindow_QMLTYPE_*'){break}
+            $current=Window-Info $h
+            if($current.Kind -eq 'editor' -or ($current.Kind -eq 'unknown' -and $h -ne $frame.Handle)){break}
         } while([DateTime]::UtcNow -lt $deadline)
-        if([VisualWin]::Class($h) -notlike 'MainWindow_QMLTYPE_*'){throw 'Editor did not open; open exact project manually.'}
+        if($current.Kind -ne 'editor' -and !($current.Kind -eq 'unknown' -and $h -ne $frame.Handle)){throw 'Editor did not open; open exact project manually.'}
         $frame=Read-Frame
     }
-    if([VisualWin]::Class($frame.Handle) -notlike 'MainWindow_QMLTYPE_*'){throw 'Expected CapCut editor or export dialog.'}
+    $info=Window-Info $frame.Handle
+    if($info.Kind -notin @('editor','unknown')){throw 'Expected CapCut editor or export dialog.'}
     $btn=One (Matches $frame @('Экспорт','Export') ($frame.Width*0.65) 0 $frame.Width ($frame.Height*0.12)) 'editor export button'
     Click-Box $frame $btn
     $deadline=[DateTime]::UtcNow.AddSeconds(15)
