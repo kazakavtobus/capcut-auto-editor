@@ -22,10 +22,20 @@ jobs:
           python-version: '3.11'
       - name: Install rendering dependencies
         shell: pwsh
+        working-directory: assets/remotion
         run: |
-          npm install --prefix assets/remotion --no-audit --no-fund
+          $ErrorActionPreference = 'Stop'
+          $manifest = Join-Path (Get-Location).Path 'package.json'
+          if (!(Test-Path -LiteralPath $manifest -PathType Leaf)) { throw "Missing manifest: $manifest" }
+          Write-Host "Installing Remotion from $manifest"
+          & npm.cmd install --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
+          if (!(Test-Path -LiteralPath 'node_modules/remotion/package.json')) { throw 'Remotion dependency not installed locally' }
+      - name: Install FFmpeg
+        shell: pwsh
+        run: |
           choco install ffmpeg --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg installation failed' }
       - name: Python compilation
         run: python -m py_compile remotion_export.py native_export.py app.py auto_pipeline.py
       - name: Render synthetic reference
