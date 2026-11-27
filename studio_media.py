@@ -13,7 +13,8 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from song_library import APPDATA, song_hash
+import re
+from song_library import APPDATA, song_hash, project_song
 
 LENGTH=5_000_000
 MIN_FOOTAGE_US=3_000_000
@@ -220,10 +221,25 @@ class MediaLibrary:
             c.executemany('INSERT INTO used VALUES(?,?,?)',[(cursor.lastrowid,x,i) for i,x in enumerate(ids)])
     def projects(self):
         with self.connect() as c:return [dict(r) for r in c.execute('SELECT * FROM renders ORDER BY id DESC')]
+    def find_song(self,key):
+        if not re.fullmatch(r'[a-f0-9]{64}',str(key)):return None
+        for p in (self.root/'songs').glob(key+'.*'):
+            try:
+                if p.is_file() and song_hash(p)==key:return p
+            except OSError:continue
+        # Recover legacy library audio from previously generated embedded projects.
+        for row in self.projects():
+            if row.get('song')!=key:continue
+            try:
+                p=project_song(Path(row['path']))
+                if song_hash(p)==key:return self.store_song(p)
+            except (OSError,ValueError):continue
+        return None
+
     def store_song(self,audio):
         p=Path(audio); key=song_hash(p)
         target=self.root/'songs'/(key+p.suffix.lower())
-        if not target.exists():
+        if not target.exists() or song_hash(target)!=key:
             with tempfile.NamedTemporaryFile(dir=target.parent,delete=False) as f:tmp=Path(f.name)
             try:shutil.copy2(p,tmp);os.replace(tmp,target)
             finally:tmp.unlink(missing_ok=True)

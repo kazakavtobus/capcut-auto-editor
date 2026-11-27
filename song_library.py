@@ -73,6 +73,21 @@ class SongLibrary:
         doc['rows'] = _valid_rows(doc.get('captions', []))
         return doc
 
+    def register_audio(self,audio: Path,display_name: str):
+        """Add a searchable audio-only entry without replacing saved captions."""
+        audio=Path(audio);self.directory.mkdir(parents=True,exist_ok=True)
+        path=self._path(audio)
+        if path.exists():return path
+        doc={'format_version':1,'sha256':path.stem,'filename':display_name or audio.name,
+            'verified':False,'source':'audio-import','edited_utc':datetime.now(timezone.utc).isoformat(),'captions':[]}
+        fd,temp=tempfile.mkstemp(prefix='.song-',suffix='.tmp',dir=self.directory)
+        try:
+            with os.fdopen(fd,'w',encoding='utf-8') as out:json.dump(doc,out,ensure_ascii=False,indent=2)
+            os.replace(temp,path)
+        finally:
+            if os.path.exists(temp):os.unlink(temp)
+        return path
+
     def save(self, audio: Path, rows, *, verified: bool, source: str, display_name: str | None = None):
         audio = Path(audio)
         clean = _valid_rows(rows)
@@ -84,7 +99,7 @@ class SongLibrary:
         if prior and prior.get('verified') and not verified:
             # Machine-generated captions must NEVER overwrite verified edits.
             return path
-        title = re.sub(r'^Автомонтаж\s*[—-]\s*', '', display_name or audio.name,flags=re.I).strip()
+        title = re.sub(r'^Автомонтаж\s*[—-]\s*', '', display_name or (prior or {}).get('filename') or audio.name,flags=re.I).strip()
         doc = {
             'format_version': 1,
             'sha256': song_hash(audio),

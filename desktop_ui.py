@@ -309,7 +309,7 @@ class SongsPage(QWidget):
         h=QHBoxLayout()
         for title,fn,primary in [('Выбрать для монтажа',self.use,True),('Редактировать текст',self.edit,False),('Переименовать',self.rename,False),('Удалить запись',self.remove,False)]:
             h.addWidget(button(title,fn,primary))
-        l.addLayout(h);self.search.textChanged.connect(self.refresh);self.list.itemDoubleClicked.connect(lambda _:self.edit());self.list.itemSelectionChanged.connect(self.highlight);self.refresh()
+        l.addLayout(h);self.search.textChanged.connect(self.refresh);self.list.itemDoubleClicked.connect(lambda _:self.use());self.list.itemSelectionChanged.connect(self.highlight);self.refresh()
     def refresh(self,*args):
         docs=[]
         for p in self.library.directory.glob('*.json'):
@@ -327,7 +327,7 @@ class SongsPage(QWidget):
             glyph=QLabel();glyph.setPixmap(icon('songs','#3478f6',32).pixmap(32,32));h.addWidget(glyph)
             box=QVBoxLayout();box.setSpacing(5);name=label(Path(d.get('filename','Песня')).stem,'cardHeading');box.addWidget(name)
             box.addWidget(label(f'{len(d.get("captions",[]))} фраз · {counts.get(d.get("sha256"),0)} проектов','muted'));h.addLayout(box,1)
-            status=label('Проверено' if d.get('verified') else 'Черновик','muted');h.addWidget(status)
+            status=label('Проверено' if d.get('verified') else ('Черновик' if d.get('captions') else 'Аудио · без текста'),'muted');h.addWidget(status)
             row.setAttribute(Qt.WA_TransparentForMouseEvents,True)
             self.list.addItem(item);self.list.setItemWidget(item,row)
         self.empty.setVisible(not self.entries)
@@ -342,17 +342,18 @@ class SongsPage(QWidget):
     def audio(self,doc):
         key=doc.get('sha256','')
         if not re.fullmatch(r'[a-f0-9]{64}',key):return None
-        saved=list((self.lib.root/'songs').glob(key+'.*'))
-        if saved:return saved[0]
+        saved=self.lib.find_song(key)
+        if saved:return saved
         path,_=QFileDialog.getOpenFileName(self,'Выбери исходное аудио','','Аудио (*.mp3 *.wav *.m4a *.flac *.ogg)')
         if not path:return None
         if song_hash(Path(path))!=key:QMessageBox.warning(self,'Песня','Это другой аудиофайл.');return None
         return self.lib.store_song(Path(path))
     def use(self):
+        if self.host.busy():return
         row=self.selected()
         if not row:return
         path=self.audio(row[1])
-        if path:self.host.set_audio(str(path));self.host.drop.title.setText(row[1].get('filename',path.name));self.host.change_page(0)
+        if path:self.host.set_audio(str(path));self.host.change_page(0)
     def edit(self):
         row=self.selected()
         if row:

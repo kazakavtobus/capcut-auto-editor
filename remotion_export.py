@@ -1,5 +1,6 @@
 """Experimental local Remotion backend. Never drives CapCut or sends Telegram."""
-import json, os, shutil, subprocess, sys, tempfile
+import json, os, shutil, subprocess, sys, tempfile, queue, threading, time, logging
+from collections import deque
 from pathlib import Path
 from song_library import APPDATA
 from native_export import ExportError, export_batch, export_one
@@ -106,6 +107,50 @@ def run_command(args,cwd,timeout=1800):
     if proc.returncode:raise ExportError('Remotion: '+(proc.stderr or proc.stdout)[-3000:])
     return proc.stdout
 
+def run_render_stream(args,cwd,progress,timeout=3600):
+    """Drain merged output continuously; keep bounded diagnostics and a watchdog."""
+    logger=logging.getLogger('capcut_auto_editor')
+    proc=subprocess.Popen(list(map(str,args)),cwd=str(cwd),stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,encoding='utf-8',errors='replace',bufsize=1,
+        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+    lines=queue.Queue();tail=deque(maxlen=60)
+    def reader():
+        try:
+            for line in proc.stdout:lines.put(line.rstrip())
+        finally:lines.put(None)
+    threading.Thread(target=reader,daemon=True).start()
+    started=last_event=time.monotonic();last_stage='Запуск Remotion';ended=False
+    try:
+        while not ended or proc.poll() is None:
+            now=time.monotonic()
+            if now-started>timeout:raise ExportError('Remotion: превышен лимит времени рендера.')
+            try:line=lines.get(timeout=1)
+            except queue.Empty:
+                if now-last_event>=15:
+                    progress(last_stage+' · прошло '+str(int(now-started))+' с')
+                    last_event=now
+                continue
+            if line is None:
+                ended=True;continue
+            tail.append(line)
+            if line.startswith('PROGRESS '):
+                try:pct=max(0,min(100,int(line.split()[1])))
+                except (ValueError,IndexError):continue
+                last_stage='Рендер Remotion: '+str(pct)+'%'
+                progress(last_stage);last_event=now
+            elif line.startswith(('STAGE:','ENCODER','GPU render failed')):
+                last_stage=line;progress(line);last_event=now
+            if not line.startswith('PROGRESS '):logger.info('Remotion: %s',line)
+        if proc.wait()!=0:raise ExportError('Remotion: '+('\n'.join(tail))[-5000:])
+    finally:
+        if proc.poll() is None:
+            if os.name=='nt':
+                subprocess.run(['taskkill','/PID',str(proc.pid),'/T','/F'],capture_output=True,
+                    creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),timeout=15)
+            else:proc.kill()
+            proc.wait(timeout=15)
+        proc.stdout.close()
+
 def prepare_runtime():
     packaged=bundled_runtime()
     if packaged:
@@ -135,16 +180,19 @@ def prepare_runtime():
         marker.write_bytes(package)
     return node
 
-def stage_assets(plan,work,settings):
+def stage_assets(plan,work,settings,progress=lambda _:None):
     public=work/'public';public.mkdir()
+    progress('Remotion: проверяю шрифт и LUT')
     font=find_font(plan.pop('fontName'))
     font_name='caption'+font.suffix.lower();shutil.copy2(font,public/font_name);plan['font']=font_name
     if any(v['lut'] for v in plan['videos']):shutil.copy2(find_lut(settings),work/'lut.cube')
     seen={}
+    total=len({(v['path'],v['brightness'],v['contrast'],v['lut']) for v in plan['videos']})
     for v in plan['videos']:
         source=v.pop('path');bright=v.pop('brightness');contrast=v.pop('contrast');lut=v.pop('lut')
         key=(source,bright,contrast,lut)
         if key not in seen:
+            progress(f'Remotion: обработка футажа {len(seen)+1}/{total} · цветокоррекция')
             name=f'clip_{len(seen):03d}.mp4'
             filters='scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30'
             if lut:filters+=',lut3d=file=lut.cube'
@@ -158,17 +206,20 @@ def stage_assets(plan,work,settings):
     manifest=work/'manifest.json';manifest.write_text(json.dumps(plan,ensure_ascii=False),encoding='utf-8')
     return manifest,public
 
-def render_to_folder(project,folder,settings,node=None):
+def render_to_folder(project,folder,settings,node=None,progress=lambda _:None):
     node=node or prepare_runtime()
+    progress('Remotion: читаю таймлайн проекта')
     plan=timeline(project)
     with tempfile.TemporaryDirectory(prefix='remotion-',dir=folder) as tmp:
-        work=Path(tmp);manifest,public=stage_assets(plan,work,settings)
+        work=Path(tmp);manifest,public=stage_assets(plan,work,settings,progress)
         output=Path(folder)/'video.mp4'
         runtime=bundled_runtime() or RUNTIME
         browser=runtime/'browser'/'chrome-headless-shell.exe'
         args=[node,runtime/'render.cjs',manifest,public,output,'auto',ffmpeg_exe()]
         if browser.is_file():args.append(browser)
-        run_command(args,runtime,3600)
+        progress('Remotion: запуск движка и браузера')
+        run_render_stream(args,runtime,progress)
+        progress('Remotion: проверка готового MP4')
     if not output.is_file():raise ExportError('Remotion не создал MP4.')
 
 def render_batch_background(projects,settings,progress=None):
@@ -179,6 +230,6 @@ def render_batch_background(projects,settings,progress=None):
         node=prepare_runtime()
     except Exception as exc:return {'rows':[],'error':str(exc),'remaining':list(map(str,projects))}
     def exporter(project,config):
-        def start(p,folder):render_to_folder(p,folder,config,node)
+        def start(p,folder):render_to_folder(p,folder,config,node,progress or (lambda _:None))
         return export_one(project,config,start=start,engine='remotion')
     return export_batch(projects,settings,progress,exporter=exporter,close=lambda *a,**kw:None)

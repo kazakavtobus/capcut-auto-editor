@@ -124,6 +124,8 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_project_path_preview.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Project path validation failed' }
+          python -m unittest discover -s tests -p test_preview_songs.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Project path validation failed' }
       - name: Smoke test manual song library UI
         shell: pwsh
         env:

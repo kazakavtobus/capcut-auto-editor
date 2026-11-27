@@ -301,7 +301,10 @@ class ExportWorker(QThread):
         super().__init__();self.projects=list(projects);self.settings=dict(settings)
     def run(self):
         renderer=render_batch_background if self.settings.get('export_engine','remotion')=='remotion' else export_batch
-        self.ready.emit(renderer(self.projects,self.settings,self.update.emit))
+        try:self.ready.emit(renderer(self.projects,self.settings,self.update.emit))
+        except Exception as exc:
+            report_exception(exc,'Ошибка экспорта')
+            self.ready.emit({'rows':[],'error':str(exc),'remaining':self.projects})
 
 class DeliveryBatchWorker(QThread):
     ready=Signal(object)
@@ -948,8 +951,8 @@ class SongLibraryDialog(QDialog):
         if not 0<=i<len(self.entries):return None
         _,doc=self.entries[i]
         lib=MediaLibrary(SETTINGS.get('media_root') or None)
-        saved=list((lib.root/'songs').glob(doc['sha256']+'.*'))
-        if saved:return saved[0]
+        saved=lib.find_song(doc['sha256'])
+        if saved:return saved
         path,_=QFileDialog.getOpenFileName(self,'Выбери исходное аудио песни','','Аудио (*.mp3 *.wav *.m4a *.flac *.ogg)')
         if not path:return None
         from song_library import song_hash
@@ -1105,7 +1108,10 @@ class MainWindow(QMainWindow):
         self.project_btn=btn('Последний проект','secondary',self.open_project_folder);self.project_btn.setEnabled(False);control.addWidget(self.project_btn);l.addLayout(control)
         self.stage=label('Ожидает запуска','muted');l.addWidget(self.stage)
         self.status=label('Выбери песню и количество проектов.','muted',True);l.addWidget(self.status)
-        self.progress=QProgressBar();self.progress.setRange(0,100);self.progress.setValue(0);l.addWidget(self.progress)
+        self.progress=QProgressBar();self.progress.setRange(0,100);self.progress.setValue(0);self.progress.setTextVisible(False);self.progress.setFixedHeight(9)
+        self.progress_text=label('0%','muted');self.progress_text.setMinimumWidth(50);self.progress_text.setAlignment(Qt.AlignRight|Qt.AlignVCenter)
+        pr=horizontal(space=12);pr.addWidget(self.progress,1);pr.addWidget(self.progress_text);l.addLayout(pr)
+        self.progress.valueChanged.connect(lambda v:self.progress_text.setText(str(max(0,v))+'%' if self.progress.maximum()>0 else '…'))
         for n in self.counts.values():n.valueChanged.connect(self.update_build_label)
         l.addStretch()
 
@@ -1123,9 +1129,12 @@ class MainWindow(QMainWindow):
     def begin_export(self,projects):
         if self.busy() or not projects:return
         self.export_worker=ExportWorker(projects,SETTINGS)
-        self.export_worker.update.connect(lambda msg:self.set_task(msg,None))
+        self.export_worker.update.connect(self.export_progress)
         self.export_worker.ready.connect(self.export_finished)
         self._export_engine_running=SETTINGS.get('export_engine','remotion')
+        self.stage.setText('●  Экспорт видео')
+        self.build_btn.setEnabled(False)
+        self.progress.setRange(0,0);self.progress_text.setText('…')
         self.set_task('Автоэкспорт '+self._export_engine_running+' · 1080p / 30 FPS',None)
         # Set foreground from the interactive GUI, not only a hidden PowerShell process.
         # Yield the screen for the visual exporter; restore it when the batch ends.
@@ -1136,6 +1145,17 @@ class MainWindow(QMainWindow):
             self.showMinimized()
         self.export_worker.start()
 
+    def export_progress(self,msg):
+        import re
+        m=re.search(r'Рендер Remotion: (\d+)%',msg)
+        percent=int(m[1]) if m else None
+        self.status.setText(msg)
+        if percent is None:
+            self.progress.setRange(0,0);self.progress_text.setText('…')
+        else:
+            self.progress.setRange(0,100);self.progress.setValue(percent);self.progress_text.setText(str(percent)+'%')
+        self.set_task(msg,percent)
+
     def retry_export(self):
         if self.busy() or not self.retry_export_paths:return
         self.begin_export(list(self.retry_export_paths))
@@ -1145,6 +1165,11 @@ class MainWindow(QMainWindow):
             if getattr(self,'_export_was_maximized',False):self.showMaximized()
             else:self.showNormal()
             self.raise_();self.activateWindow()
+        self.build_btn.setEnabled(True)
+        self.progress.setRange(0,100);self.progress.setValue(0 if result.get('error') else 100)
+        self.progress_text.setText('Ошибка' if result.get('error') else '100%')
+        self.stage.setText('!  Ошибка экспорта' if result.get('error') else '✓  Экспорт готов')
+        self.status.setText(result.get('error') or 'Видео готово к отгрузке.')
         rows=result.get('rows',[])
         self.retry_export_paths=list(result.get('remaining',[]))
         self.retry_export_btn.setEnabled(bool(self.retry_export_paths))
@@ -1563,11 +1588,21 @@ class MainWindow(QMainWindow):
         if index==0:self.refresh_dashboard()
 
     def set_audio(self,p):
-        self.audio=p
-        self.drop.title.setText(Path(p).stem[:65])
-        self.drop.sub.setText('Файл выбран  ·  '+Path(p).suffix.upper().strip('.'))
-        self.file_name.setText(str(p))
-        self.note('Загружен музыкальный файл. Готов к монтажу.')
+        if self.busy():return
+        try:
+            source=Path(p);lib=MediaLibrary(SETTINGS.get('media_root') or None)
+            saved=lib.store_song(source)
+            library=SongLibrary();library.register_audio(saved,source.name)
+            record=library.load(saved) or {};title=record.get('filename',source.name)
+        except Exception as exc:
+            report_exception(exc,'Сохранение аудио в библиотеку')
+            QMessageBox.warning(self,'Не удалось сохранить песню',str(exc));return
+        self.audio=str(saved)
+        self.drop.title.setText(Path(title).stem[:65])
+        self.drop.sub.setText('В библиотеке  ·  '+saved.suffix.upper().strip('.'))
+        self.file_name.setText(str(saved))
+        self.note('Песня сохранена в библиотеке. Готов к монтажу.')
+        if self.songs_page:self.songs_page.refresh()
 
     def note(self,msg):
         self.status.setText(msg)
@@ -1690,7 +1725,7 @@ class MainWindow(QMainWindow):
         self.build_btn.setEnabled(False)
         self.stage.setText('●  В процессе')
         self.header.status.setText('●  Монтирую')
-        self.progress.setRange(0,0)
+        self.progress.setRange(0,0);self.progress_text.setText('…')
         self.note('Запускаю автоматическую сборку...')
         self.set_task('Подготовка монтажа',None)
         self.worker=RenderWorker(self.audio,SETTINGS,counts)

@@ -15,8 +15,10 @@ function canUseNvenc(ffmpeg,mode){
   if(!manifest||!publicDir||!output||!['cpu','auto'].includes(mode))throw Error('Expected manifest, media directory, output and optional cpu/auto mode.');
   const inputProps=JSON.parse(fs.readFileSync(manifest,'utf8'));
   const gpu=canUseNvenc(ffmpeg,mode);
+  console.log('STAGE: Подготовка композиции Remotion');
   const serveUrl=await bundle({entryPoint:path.join(__dirname,'index.jsx'),publicDir:path.resolve(publicDir)});
   try{
+    console.log('STAGE: Запуск Chromium и загрузка композиции');
     const composition=await selectComposition({serveUrl,id:'StudioMovie',inputProps,browserExecutable});
     const options={composition,serveUrl,inputProps,browserExecutable,codec:'h264',audioCodec:'aac',outputLocation:path.resolve(output),
       concurrency:2,videoBitrate:'10M',audioBitrate:'192k',pixelFormat:'yuv420p'};
