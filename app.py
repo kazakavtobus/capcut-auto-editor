@@ -7,6 +7,8 @@ login, if required, is user-initiated from Settings.
 from __future__ import annotations
 
 import os
+import time
+import json
 import subprocess
 import sys
 import uuid
@@ -44,7 +46,7 @@ from builder import template_zip, USER_TEMPLATE_ZIP
 from updater import check_release,download_installer,launch_installer
 from semantic_captions import clean_caption
 from song_library import SongLibrary, project_song, import_project_corrections
-from waveform_editor import WaveformTimeline, waveform_peaks
+from waveform_editor import WaveformTimeline, waveform_peaks, timeline_panel, PhrasePreview
 from alignment import align_existing, AlignmentUnavailable
 try:
     from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -409,21 +411,22 @@ class SubtitleDialog(QDialog):
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setDefaultSectionSize(43)
         self.table.setToolTip('Дважды нажми на ячейку, чтобы изменить текст или время')
-        l.addWidget(self.table,1)
+        self.table.setShowGrid(False);self.table.setAlternatingRowColors(False);self.table.verticalHeader().setDefaultSectionSize(38)
+        split=horizontal(space=12);split.addWidget(self.table,1)
+        side=panel();pv=vertical(side,8,(12,10,12,10));pv.addWidget(label('ПРЕДПРОСМОТР · 9:16','micro'))
+        self.preview_account=QComboBox()
+        for key in ('1','2'):self.preview_account.addItem(account_name(SETTINGS,key),key)
+        pv.addWidget(self.preview_account);self.preview=PhrasePreview();pv.addWidget(self.preview,0,Qt.AlignHCenter)
+        split.addWidget(side);l.addLayout(split,1)
         editor_actions=horizontal(space=9)
         editor_actions.addWidget(btn('＋  Добавить субтитр','primary',self.add_subtitle))
         editor_actions.addWidget(btn('⧉  Дублировать','secondary',self.duplicate_subtitle))
         editor_actions.addWidget(btn('−  Удалить','secondary',self.delete_subtitle))
         editor_actions.addStretch()
         l.addLayout(editor_actions)
-        self.preview=label('Выдели строку для предпросмотра','cardHeading',True)
-        self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setMinimumHeight(76)
-        self.preview.setStyleSheet('QLabel {background: #0A1325; border: 1px solid #45547C; border-radius: 16px; padding: 12px; color: #FFFFFF; font-size: 20px; font-weight: 700;}')
-        l.addWidget(self.preview)
-        self.composition=CompositionPreview(self);l.addWidget(self.composition)
         self.wave=WaveformTimeline(self)
-        l.addWidget(self.wave)
+        l.addWidget(timeline_panel(self.wave))
+        self.preview_account.currentIndexChanged.connect(self.update_preview)
         self.wave.seekRequested.connect(self.seek_audio)
         self.wave.subtitleSelected.connect(self.table.selectRow)
         self.wave.subtitleEdited.connect(self._wave_timing_changed)
@@ -462,6 +465,11 @@ class SubtitleDialog(QDialog):
         try: rows,_=_project_data(project)
         except Exception as e: QMessageBox.warning(self,'Не удалось открыть проект',str(e));return
         self.rows=rows;self.project=project
+        try:
+            account=str(json.loads((Path(project)/'AutoAssets'/'sources.json').read_text(encoding='utf-8')).get('account','1'))
+            ix=self.preview_account.findData(account)
+            if ix>=0:self.preview_account.setCurrentIndex(ix)
+        except (OSError,ValueError):pass
         self.pathlabel.setText(str(project))
         self.table.setRowCount(len(rows))
         for i,row in enumerate(rows):
@@ -486,11 +494,8 @@ class SubtitleDialog(QDialog):
 
     def update_preview(self,*_):
         r=self.table.currentRow()
-        if r<0 or not self.table.item(r,2):
-            self.preview.setText('Выдели строку для предпросмотра')
-        else:
-            self.preview.setText(clean_caption(self.table.item(r,2).text()) or 'Новый субтитр')
-        self.composition.update_words(self.preview.text())
+        text=clean_caption(self.table.item(r,2).text()) if r>=0 and self.table.item(r,2) else ''
+        self.preview.set_phrase(text,self.preview_account.currentData() or '1')
         self.wave.set_captions(self._current_rows())
         self.wave.set_selected(r)
 
@@ -500,7 +505,7 @@ class SubtitleDialog(QDialog):
             try:
                 rows.append({'start':float(self.table.item(i,0).text().replace(',','.')),
                              'end':float(self.table.item(i,1).text().replace(',','.')),
-                             'text':self.table.item(i,2).text()})
+                             'text':self.table.item(i,2).text(),'table_index':i})
             except (AttributeError,ValueError):
                 continue
         return rows
@@ -522,6 +527,8 @@ class SubtitleDialog(QDialog):
         self.wave.set_position(secs)
         dur=self.wave.duration
         self.play_label.setText(f'{int(secs//60):02d}:{secs%60:04.1f} / {int(dur//60):02d}:{dur%60:04.1f}')
+        active=next((r for r in self.wave.rows if r['start']<=secs<r['end']),None)
+        self.preview.set_phrase(clean_caption(active['text']) if active else '',self.preview_account.currentData() or '1')
 
     def toggle_audio(self):
         if not self.audio_player or not self.audio_source:return
@@ -702,7 +709,13 @@ class ManualSongDialog(QDialog):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setAlternatingRowColors(True)
-        layout.addWidget(self.table,1)
+        self.table.setShowGrid(False);self.table.setAlternatingRowColors(False);self.table.verticalHeader().setDefaultSectionSize(38)
+        split=horizontal(space=12);split.addWidget(self.table,1)
+        side=panel();pv=vertical(side,8,(12,10,12,10));pv.addWidget(label('ПРЕДПРОСМОТР · 9:16','micro'))
+        self.preview_account=QComboBox()
+        for key in ('1','2'):self.preview_account.addItem(account_name(SETTINGS,key),key)
+        pv.addWidget(self.preview_account);self.preview=PhrasePreview();pv.addWidget(self.preview,0,Qt.AlignHCenter)
+        split.addWidget(side);layout.addLayout(split,1)
         actions=horizontal(space=8)
         actions.addWidget(btn('＋ Фраза','secondary',self.add_row))
         actions.addWidget(btn('− Удалить','secondary',self.delete_row))
@@ -710,7 +723,8 @@ class ManualSongDialog(QDialog):
         actions.addWidget(btn('Конец = курсор','secondary',lambda:self.mark(1)))
         actions.addWidget(btn('Следующая фраза (Enter)','secondary',self.tap))
         actions.addStretch();layout.addLayout(actions)
-        self.wave=WaveformTimeline(self);layout.addWidget(self.wave)
+        self.wave=WaveformTimeline(self);layout.addWidget(timeline_panel(self.wave))
+        self.preview_account.currentIndexChanged.connect(self.redraw)
         self.wave.seekRequested.connect(self.seek)
         self.wave.subtitleSelected.connect(self.table.selectRow)
         self.wave.subtitleEdited.connect(self.wave_changed)
@@ -825,13 +839,14 @@ class ManualSongDialog(QDialog):
                 start=float(self.table.item(i,0).text().replace(',','.'))
                 end=float(self.table.item(i,1).text().replace(',','.'))
                 words=self.table.item(i,2).text()
-                if end>start>=0:result.append({'start':start,'end':end,'text':words})
+                if end>start>=0:result.append({'start':start,'end':end,'text':words,'table_index':i})
             except (ValueError,AttributeError):continue
         return result
 
-    def redraw(self):
+    def redraw(self,*args):
         self.wave.set_captions(self.current_rows())
-        self.wave.set_selected(self.table.currentRow())
+        r=self.table.currentRow();self.wave.set_selected(r)
+        self.preview.set_phrase(clean_caption(self.table.item(r,2).text()) if r>=0 and self.table.item(r,2) else '',self.preview_account.currentData() or '1')
 
     def wave_changed(self,i,a,b):
         if i<0 or i>=self.table.rowCount():return
@@ -850,6 +865,8 @@ class ManualSongDialog(QDialog):
         sec=millis/1000
         self.wave.set_position(sec)
         self.time_label.setText(f'{sec:.1f} / {self.duration_us/1_000_000:.1f} сек')
+        active=next((r for r in self.wave.rows if r['start']<=sec<r['end']),None)
+        self.preview.set_phrase(clean_caption(active['text']) if active else '',self.preview_account.currentData() or '1')
 
     def play_pause(self):
         if not self.player or not self.song:return
@@ -1015,6 +1032,7 @@ class MainWindow(QMainWindow):
         self.resize(1330,850);self.setMinimumSize(820,580)
         self.worker=None;self.login_worker=None;self.update_worker=None;self.telegram_worker=None;self.export_worker=None;self.pending_exports=[];self.retry_export_paths=[];self._auto_export_requested=False
         self.last_project=None;self.audio='';self._updating=False
+        self.batch_clock=None
         self.media_page=None;self.songs_page=None;self.subtitle_page=None;self.manual_page=None
         self.profiles_page=None;self.projects_page=None
         outer=QWidget();outer.setObjectName('desktop');self.setCentralWidget(outer)
@@ -1035,6 +1053,7 @@ class MainWindow(QMainWindow):
         self._make_tasks_page()
         self._make_telegram_page()
         self.change_page(0)
+        self.batch_timer=QTimer(self);self.batch_timer.timeout.connect(self.update_batch_clock);self.batch_timer.start(500)
         QTimer.singleShot(450,self.initial_check)
 
     def _make_nav(self):
@@ -1119,6 +1138,7 @@ class MainWindow(QMainWindow):
         self.progress_text=label('0%','muted');self.progress_text.setMinimumWidth(50);self.progress_text.setAlignment(Qt.AlignRight|Qt.AlignVCenter)
         pr=horizontal(space=12);pr.addWidget(self.progress,1);pr.addWidget(self.progress_text);l.addLayout(pr)
         self.progress.valueChanged.connect(lambda v:self.progress_text.setText(str(max(0,v))+'%' if self.progress.maximum()>0 else '…'))
+        self.batch_main=label('Время партии появится после запуска','muted',True);l.addWidget(self.batch_main)
         for n in self.counts.values():n.valueChanged.connect(self.update_build_label)
         l.addStretch()
 
@@ -1144,8 +1164,11 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             report_exception(exc,'Импорт LUT');QMessageBox.warning(self,'Не удалось импортировать LUT',str(exc))
 
-    def begin_export(self,projects):
+    def begin_export(self,projects,continue_batch=False):
         if self.busy() or not projects:return
+        if not continue_batch or not self.batch_clock:self.start_batch_clock(len(projects),'render')
+        else:self.batch_clock.update(phase='render',phase_start=time.perf_counter())
+        self.update_batch_clock()
         self.export_worker=ExportWorker(projects,SETTINGS)
         self.export_worker.update.connect(self.export_progress)
         self.export_worker.ready.connect(self.export_finished)
@@ -1189,8 +1212,10 @@ class MainWindow(QMainWindow):
             self.set_task('Экспорт завершён: '+str(len(rows)),100)
             self.tg_batch_status.setText('Готово к проверке: '+str(len(rows))+'. Отметь ролики и подтверди отправку.')
         paths={r['path'] for r in rows}
-        self.export_selected=paths
+        self.export_selected={r['path'] for r in self.export_rows if r['path'] in paths and r['delivery_state']=='ready'}
+        if any(r['path'] in paths and r['exported_at']<=float(SETTINGS.get('export_clear_before',0)) for r in self.export_rows):self.export_archive.setChecked(True)
         self.render_export_cards()
+        self.end_batch_phase(len(rows),bool(result.get('error')))
 
     def after_render_finished(self):
         if not self.pending_exports:return
@@ -1200,15 +1225,49 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(100,self.after_render_finished);return
         projects=self.pending_exports;self.pending_exports=[]
         if self.busy():
+            self.end_batch_phase(failed=True)
             self.set_task('Автоэкспорт не запущен: другая задача уже выполняется. Проекты сохранены.',0)
             QMessageBox.warning(self,'Автоэкспорт','Другая задача ещё выполняется. Повтори экспорт из раздела «Проекты».')
             return
-        self.begin_export(projects)
+        self.begin_export(projects,continue_batch=True)
+
+    def start_batch_clock(self,count,phase):
+        now=time.perf_counter()
+        self.batch_clock={'count':count,'done':0,'start':now,'phase_start':now,'phase':phase,'montage':0.,'render':0.}
+        self.update_batch_clock()
+
+    def end_batch_phase(self,done=None,failed=False):
+        if not self.batch_clock:return
+        b=self.batch_clock;now=time.perf_counter()
+        if b['phase'] in ('montage','render'):b[b['phase']]+=now-b['phase_start']
+        b.update(phase='failed' if failed else 'done',elapsed=now-b['start'])
+        if done is not None:b['done']=done
+        self.update_batch_clock()
+        self.log.append('• '+self.batch_main.text())
+
+    def update_batch_clock(self):
+        if not self.batch_clock:return
+        b=self.batch_clock;phase=b['phase'];now=time.perf_counter()
+        active=phase in ('montage','render','waiting')
+        montage=b['montage']+(now-b['phase_start'] if phase=='montage' else 0)
+        render=b['render']+(now-b['phase_start'] if phase=='render' else 0)
+        total=now-b['start'] if active else b.get('elapsed',montage+render)
+        def fmt(sec):
+            sec=max(0,int(sec));return f'{sec//60:02d}:{sec%60:02d}'
+        text=f"Партия: {b['count']} рол. · Монтаж {fmt(montage)} · Рендер {fmt(render)} · Всего {fmt(total)}"
+        if not active:
+            text+=f" · Готово {b['done']}/{b['count']}"
+            if b['done']:text+=f" · В среднем {fmt(total/b['done'])}/рол."
+            if phase=='failed':text+=' · Ошибка'
+        for name in ('batch_main','batch_tasks','batch_delivery'):
+            w=getattr(self,name,None)
+            if w:w.setText(text)
 
     def _make_tasks_page(self):
         content=self.scroll_page();l=vertical(content,14,(30,26,30,26))
         l.addWidget(label('Обработка','heading'));l.addWidget(label('Текущая задача и журнал этой сессии.','muted',True))
         self.task_summary=label('Нет активных задач','cardHeading',True);l.addWidget(self.task_summary)
+        self.batch_tasks=label('Время партии появится после запуска','muted',True);l.addWidget(self.batch_tasks)
         self.log=QTextEdit();self.log.setReadOnly(True);self.log.setMinimumHeight(320);self.log.setPlaceholderText('Здесь появятся этапы обработки.');l.addWidget(self.log,1)
         l.addWidget(btn('Открыть полный журнал ошибок','secondary',self.open_logs),0,Qt.AlignLeft)
         l.addWidget(btn('Скопировать журнал этой сессии','secondary',lambda:QApplication.clipboard().setText(self.log.toPlainText())),0,Qt.AlignLeft)
@@ -1255,6 +1314,7 @@ class MainWindow(QMainWindow):
         rl.addWidget(btn('Открыть папку готовых видео','secondary',self.open_export_folder))
         rl.addWidget(label('Отметь проверенные ролики. Ничего не отправляется автоматически.','muted',True))
         self.export_rows=[];self.export_selected=set();self.export_cards={}
+        self.batch_delivery=label('Время последней партии','muted',True);rl.addWidget(self.batch_delivery)
         filters=horizontal(space=8)
         self.export_search=QLineEdit();self.export_search.setPlaceholderText('Поиск песни или файла');filters.addWidget(self.export_search,1)
         self.export_filter=QComboBox();self.export_filter.addItem('Все аккаунты','')
@@ -1263,10 +1323,13 @@ class MainWindow(QMainWindow):
         options=horizontal(space=8)
         self.export_state=QComboBox();self.export_state.addItem('Все ролики','');self.export_state.addItem('К отправке','ready');self.export_state.addItem('Отправленные','sent');self.export_state.addItem('Проверить отправку','pending')
         options.addWidget(self.export_state,1);options.addWidget(btn('Обновить','secondary',self.refresh_export_list));rl.addLayout(options)
+        archive=horizontal(space=8);self.export_archive=QCheckBox('Показать архив');archive.addWidget(self.export_archive,1)
+        archive.addWidget(btn('Очистить список','secondary',self.clear_export_list));rl.addLayout(archive)
         self.export_count=label('','muted',True);rl.addWidget(self.export_count)
         self.export_list=QWidget();self.export_list.setObjectName('page');self.export_layout=vertical(self.export_list,8)
         sc=QScrollArea();sc.setWidgetResizable(True);sc.setMinimumHeight(340);sc.setWidget(self.export_list);rl.addWidget(sc)
         self.export_search.textChanged.connect(self.render_export_cards);self.export_filter.currentIndexChanged.connect(self.render_export_cards);self.export_state.currentIndexChanged.connect(self.render_export_cards)
+        self.export_archive.toggled.connect(self.render_export_cards)
         self.tg_batch_send=btn('Подтвердить и отправить выбранные','primary',self.send_export_selection);rl.addWidget(self.tg_batch_send)
         self.tg_batch_status=label('','muted',True);self.tg_batch_status.setTextFormat(Qt.PlainText);rl.addWidget(self.tg_batch_status)
         l.addWidget(review);l.addStretch();self.telegram_preview()
@@ -1304,6 +1367,12 @@ class MainWindow(QMainWindow):
         self.export_selected.intersection_update(r['path'] for r in self.export_rows if r['delivery_state']=='ready')
         self.render_export_cards()
 
+    def clear_export_list(self):
+        if self.busy():return
+        if QMessageBox.question(self,'Очистить список?','Все текущие экспорты будут скрыты в архиве. MP4, проекты и история Telegram останутся на диске. Продолжить?')!=QMessageBox.Yes:return
+        SETTINGS['export_clear_before']=time.time();save_settings(SETTINGS)
+        self.export_selected.clear();self.export_archive.setChecked(False);self.render_export_cards()
+
     def render_export_cards(self,*args):
         from datetime import datetime,timedelta
         self.export_cards={}
@@ -1311,7 +1380,8 @@ class MainWindow(QMainWindow):
             item=self.export_layout.takeAt(0)
             if item.widget():item.widget().deleteLater()
         q=self.export_search.text().strip().casefold();account=self.export_filter.currentData();state=self.export_state.currentData()
-        rows=[r for r in self.export_rows if (not account or r['account']==account) and (not state or r['delivery_state']==state) and q in (r['song']+' '+Path(r['path']).name+' '+account_name(SETTINGS,r['account'])).casefold()]
+        cutoff=float(SETTINGS.get('export_clear_before',0))
+        rows=[r for r in self.export_rows if (self.export_archive.isChecked() or r['exported_at']>cutoff) and (not account or r['account']==account) and (not state or r['delivery_state']==state) and q in (r['song']+' '+Path(r['path']).name+' '+account_name(SETTINGS,r['account'])).casefold()]
         today=datetime.now().date();last=None
         for row in rows:
             dt=datetime.fromtimestamp(row['exported_at'])
@@ -1781,6 +1851,7 @@ class MainWindow(QMainWindow):
         counts={a:n.value() for a,n in self.counts.items()}
         if not sum(counts.values()):
             QMessageBox.information(self,'Аккаунт','Выбери количество проектов.');return
+        self.start_batch_clock(sum(counts.values()),'montage')
         self.build_btn.setText('◌   Создаю проекты…')
         self.build_btn.setProperty('working', True)
         self.build_btn.style().unpolish(self.build_btn)
@@ -1821,12 +1892,16 @@ class MainWindow(QMainWindow):
         self.set_task('Готово проектов: '+str(info.get('total',1)),100)
         self.refresh_dashboard()
         if self._auto_export_requested:
+            if self.batch_clock:
+                now=time.perf_counter();self.batch_clock['montage']+=now-self.batch_clock['phase_start'];self.batch_clock.update(phase='waiting',phase_start=now)
             self.pending_exports=info.get('projects',[str(path)])
             return
+        self.end_batch_phase(info.get('total',1))
         QMessageBox.information(self,'Проект готов',
            f"Создано проектов: {info.get('total',1)}. Проекты доступны в истории.\n\n"+'\n'.join(info.get('projects',[str(path)])))
 
     def failed(self,msg):
+        self.end_batch_phase(failed=True)
         self.build_btn.setEnabled(True)
         self.build_btn.setProperty('working', False)
         self.build_btn.setText('✦   Создать проект')

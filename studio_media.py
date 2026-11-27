@@ -202,7 +202,10 @@ class MediaLibrary:
         rng=random.SystemRandom()
         selected=[];sources=set()
         for _ in range(count):
-            best=min(pool,key=lambda r:(recent.get(r['id'],0),song_uses.get(r['id'],0),int(distinct_sources and r['source'] in sources),r['uses'],r['last_use'] or 0,rng.random()))
+            eligible=[r for r in pool if r['source'] not in sources] if distinct_sources else pool
+            # Use different source videos whenever physically possible, even if a
+            # fresh fragment from an already chosen source would rank higher.
+            best=min(eligible or pool,key=lambda r:(recent.get(r['id'],0),song_uses.get(r['id'],0),r['uses'],r['last_use'] or 0,rng.random()))
             selected.append(best);sources.add(best['source']);pool.remove(best)
         def score(order):
             ids=[r['id'] for r in order]

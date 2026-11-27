@@ -245,3 +245,17 @@ class StudioTests(unittest.TestCase):
             self.assertEqual([r['id'] for r in lib.projects()],[10,9])
             with lib.connect() as c:self.assertEqual(c.execute('SELECT count(*) FROM used').fetchone()[0],6)
             self.assertEqual(len(MediaLibrary(tmp).projects()),2)
+
+    def test_distinct_original_sources_even_when_recent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lib=MediaLibrary(tmp)
+            with lib.connect() as c:
+                for i in range(5):
+                    src=str(i);c.execute('INSERT INTO sources VALUES(?,?,?,?)',(src,src,'original.mp4','Город'))
+                    for j in range(5 if i==0 else 1):
+                        key=src+'-'+str(j);p=Path(tmp)/(key+'.mp4');p.write_bytes(b'fixture')
+                        c.execute('INSERT INTO clips(id,source,idx,path,preview) VALUES(?,?,?,?,?)',(key,src,j,str(p),''))
+            rows=lib.choose(5,distinct_sources=True);lib.record('1','first',rows,'song')
+            second=lib.choose(5,distinct_sources=True,song='song')
+            self.assertEqual(len({r['source'] for r in second}),5)
+            self.assertNotEqual([r['id'] for r in rows],[r['id'] for r in second])

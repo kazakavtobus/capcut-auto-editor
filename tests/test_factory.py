@@ -31,4 +31,10 @@ class FactoryTests(unittest.TestCase):
             raster_caption(cap,fonts/'arial.ttf',a);raster_caption(cap,fonts/'times.ttf',b)
             self.assertNotEqual(a.read_bytes(),b.read_bytes())
             with Image.open(a) as im:self.assertIsNotNone(im.getbbox())
+    def test_timeline_move_and_trim(self):
+        from waveform_editor import retime
+        self.assertEqual(retime(2,4,'move',1,0,7),(3,5))
+        self.assertEqual(retime(2,4,'move',10,0,7),(5,7))
+        self.assertEqual(retime(2,4,'start',-.97,0,7,(1,),.05),(1,4))
+        self.assertEqual(retime(2,4,'end',10,0,7),(2,7))
 if __name__=='__main__':unittest.main()

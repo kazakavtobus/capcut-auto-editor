@@ -346,6 +346,7 @@ def raster_caption(caption,font,target):
     pos=(5-bbox[0],5-bbox[1])
     draw.multiline_text((pos[0]+3,pos[1]+3),text,font=face,fill=(0,0,0,166),spacing=spacing,align='center')
     draw.multiline_text(pos,text,font=face,fill=caption['color'],spacing=spacing,align='center')
+    if target is None:return image
     image.save(target);return w,h
 
 def stage_assets(plan,work,settings,progress=lambda _:None):
