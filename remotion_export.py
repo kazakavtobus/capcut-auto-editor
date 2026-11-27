@@ -340,6 +340,7 @@ def raster_caption(caption,font,target):
     spacing=max(0,round(size*.12))
     scratch=Image.new('RGBA',(1,1));draw=ImageDraw.Draw(scratch)
     bbox=draw.multiline_textbbox((0,0),text,font=face,spacing=spacing,align='center')
+    bbox=(math.floor(bbox[0]),math.floor(bbox[1]),math.ceil(bbox[2]),math.ceil(bbox[3]))
     w=max(1,bbox[2]-bbox[0])+10;h=max(1,bbox[3]-bbox[1])+10
     image=Image.new('RGBA',(w,h));draw=ImageDraw.Draw(image)
     pos=(5-bbox[0],5-bbox[1])
