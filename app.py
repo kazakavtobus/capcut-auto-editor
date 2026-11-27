@@ -312,9 +312,13 @@ class ExportWorker(QThread):
 class DeliveryBatchWorker(QThread):
     ready=Signal(object)
     update=Signal(str)
-    def __init__(self,rows,token,chats,settings):
-        super().__init__();self.rows=rows;self.token=token;self.chats=chats;self.settings=dict(settings)
+    def __init__(self,rows,token,chats,settings,production_seconds=None):
+        super().__init__();self.rows=rows;self.token=token;self.chats=chats;self.settings=dict(settings);self.production_seconds=production_seconds
     def run(self):
+        from telegram_delivery import batch_report,send_batch_report
+        from datetime import datetime
+        batch=datetime.now().strftime('%d%m-%H%M%S')+'-'+uuid.uuid4().hex[:4]
+        ids=chat_ids(self.chats);states={cid:[] for cid in ids}
         results=[]
         try:
             for row in self.rows:
@@ -322,10 +326,18 @@ class DeliveryBatchWorker(QThread):
                 try:
                     if file_digest(row['path'])!=row.get('export_sha256'):raise ValueError('MP4 изменён после экспорта.')
                     verify_mp4(row['path'],row['duration'])
-                    result=send_export(self.token,self.chats,row['path'],self.settings,row['account'],row['song'],self.update.emit)
+                    result=send_export(self.token,self.chats,row['path'],self.settings,row['account'],row['song'],self.update.emit,row.get('exported_at'),batch)
                     results.extend(row['song']+' · '+cid+': '+state for cid,state in result)
+                    by_chat=dict(result)
+                    for cid in ids:states[cid].append(by_chat.get(cid,'Нет подтверждения'))
                 except Exception:
                     results.append(row['song']+': не удалось подтвердить или отправить MP4')
+                    for cid in ids:states[cid].append('Нет подтверждения')
+            for cid in ids:
+                # Don't send repeated summaries for a batch containing only already-delivered files.
+                if not any(s=='Отправлено' for s in states[cid]):continue
+                try:send_batch_report(self.token,cid,batch_report(self.settings,self.rows,states[cid],batch,self.production_seconds))
+                except Exception:results.append(cid+': итоговый отчёт не подтверждён. MP4 повторно не отправляются.')
         finally:self.token=''
         self.ready.emit(results)
 
@@ -1215,6 +1227,7 @@ class MainWindow(QMainWindow):
         self.export_selected={r['path'] for r in self.export_rows if r['path'] in paths and r['delivery_state']=='ready'}
         if any(r['path'] in paths and r['exported_at']<=float(SETTINGS.get('export_clear_before',0)) for r in self.export_rows):self.export_archive.setChecked(True)
         self.render_export_cards()
+        if self.batch_clock:self.batch_clock['export_paths']=paths
         self.end_batch_phase(len(rows),bool(result.get('error')))
 
     def after_render_finished(self):
@@ -1423,7 +1436,10 @@ class MainWindow(QMainWindow):
         except Exception:QMessageBox.warning(self,'Отгрузка','Настрой токен и Chat ID.');return
         if QMessageBox.question(self,'Подтвердить отгрузку',f'Отправить {len(rows)} роликов в Telegram?\nЧаты: '+', '.join(ids))!=QMessageBox.Yes:return
         self.telegram_controls(False);self.tg_batch_status.setText('Отправка…')
-        self.telegram_worker=DeliveryBatchWorker(rows,token,', '.join(ids),SETTINGS)
+        clock=self.batch_clock or {}
+        selected_paths={r['path'] for r in rows}
+        production_seconds=clock.get('elapsed') if clock.get('phase')=='done' and selected_paths==clock.get('export_paths') else None
+        self.telegram_worker=DeliveryBatchWorker(rows,token,', '.join(ids),SETTINGS,production_seconds)
         self.telegram_worker.update.connect(self.tg_batch_status.setText)
         self.telegram_worker.ready.connect(lambda results:(self.tg_batch_status.setText('\n'.join(results)),self.refresh_export_list()))
         self.telegram_worker.finished.connect(lambda:self.telegram_controls(True));self.telegram_worker.start()
@@ -1432,7 +1448,7 @@ class MainWindow(QMainWindow):
         account=self.tg_account.currentData()
         if account not in ('1','2'):
             self.tg_preview.setText('Выбери аккаунт для этого ролика.');return
-        self.tg_preview.setText(telegram_caption(SETTINGS,account,self.tg_song.text(),'номер_ролика'))
+        self.tg_preview.setText(telegram_caption(SETTINGS,account,self.tg_song.text(),'номер_ролика',self.tg_file.text() or None))
 
     def open_delivery(self,project=None):
         self.change_page(9)

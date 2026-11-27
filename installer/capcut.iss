@@ -1,5 +1,5 @@
 #define AppName "TikTok Factory"
-#define AppVersion "10.0.1"
+#define AppVersion "10.0.2"
 [Setup]
 AppId={{7512998B-7421-432D-A898-9C42E6FC38D3}
 AppName={#AppName}

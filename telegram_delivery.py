@@ -1,5 +1,8 @@
 """Local outbound Telegram transport. Never log the token or expose it in errors."""
 import hashlib,json,re,sqlite3,uuid
+from datetime import datetime
+from collections import Counter
+from export_names import safe_part
 from pathlib import Path
 from urllib.request import Request,urlopen
 from urllib.error import HTTPError
@@ -25,12 +28,42 @@ def chat_ids(value):
 def tag(value,limit=55):
     return ''.join(c for c in value if c.isalnum() or c=='_')[:limit] or 'Видео'
 
-def caption(settings,account,song,digest):
+def clip_number(path=None):
+    if not path:return '001'
+    m=re.search(r'\s+[—–]\s+ролик\s+(\d{3,})$',Path(path).stem,re.IGNORECASE)
+    return m.group(1) if m else '001'
+
+def song_title(song):
+    return ' '.join(str(song).replace('_',' ').split())[:180] or 'Без названия'
+
+def caption(settings,account,song,digest,path=None,exported_at=None,batch=None):
     if account not in ('1','2'):raise TelegramError('Неизвестный аккаунт.')
-    name=account_name(settings,account)
-    song=' '.join(str(song).split())[:180] or 'Без названия'
-    tags=list(dict.fromkeys(['#'+tag(name),'#account'+account,'#Песня_'+tag(song),'#Ролик_'+digest[:12]]))
-    return '🏭 ТикТок Завод\nАккаунт: '+name+'\nПесня: '+song+'\nГотово к публикации\n\n'+' '.join(tags)
+    name=account_name(settings,account);original=' '.join(str(song).split())[:180] or 'Без названия'
+    tags=list(dict.fromkeys(['#'+tag(name),'#account'+account,'#Песня_'+tag(original),'#Ролик_'+digest[:12]]))
+    date=datetime.fromtimestamp(exported_at if exported_at is not None else datetime.now().timestamp()).strftime('%d.%m.%Y · %H:%M')
+    lines=[('🔵' if account=='1' else '🟣')+' '+name+' · Ролик №'+clip_number(path),'🎵 '+song_title(song),'📅 '+date]
+    if batch:lines.append('📦 Партия '+batch)
+    return '\n'.join(lines)+'\n\n'+' '.join(tags)
+
+def batch_report(settings,rows,states,batch,production_seconds=None):
+    counts=Counter(r['account'] for r in rows)
+    songs=list(dict.fromkeys(song_title(r['song']) for r in rows))
+    confirmed=sum(s in ('Отправлено','Уже отправлено') for s in states)
+    fresh=sum(s=='Отправлено' for s in states)
+    lines=['🏭 Отгрузка · '+batch,'🎵 '+(songs[0] if len(songs)==1 else f'{len(songs)} песен')]
+    for account,count in sorted(counts.items()):
+        lines.append(('🔵 ' if account=='1' else '🟣 ')+account_name(settings,account)+' — '+str(count)+' рол.')
+    if production_seconds is not None:
+        sec=max(0,int(production_seconds));lines.append(f'⏱ Производство: {sec//60} мин {sec%60:02d} сек')
+    lines.extend([f'✅ Подтверждено: {confirmed}/{len(rows)}',f'📤 Новых файлов: {fresh}'])
+    if confirmed<len(rows):lines.append(f'⚠️ Не подтверждено: {len(rows)-confirmed}. Проверь журнал.')
+    return '\n'.join(lines)
+
+def send_batch_report(token,chat,text):
+    result=api(token,'sendMessage',{'chat_id':chat,'text':text})
+    if not isinstance(result,dict) or not isinstance(result.get('message_id'),int):
+        raise UnknownDelivery('Отчёт не подтверждён.')
+    return result
 
 def config_path():return APPDATA/'telegram.json'
 def load_config():
@@ -46,7 +79,7 @@ def save_config(token,chats):
     tmp.write_text(json.dumps({'token':token,'chats':', '.join(ids)},ensure_ascii=False),encoding='utf-8')
     tmp.replace(p)
 
-def api(token,method,fields=None,file=None):
+def api(token,method,fields=None,file=None,filename='video.mp4'):
     token=validate_token(token)
     fields=fields or {}
     if file is None:
@@ -56,8 +89,9 @@ def api(token,method,fields=None,file=None):
         parts=[]
         for key,value in fields.items():
             parts.append(('--'+boundary+'\r\nContent-Disposition: form-data; name="'+key+'"\r\n\r\n'+str(value)+'\r\n').encode('utf-8'))
-        # Use a fixed safe filename; the exact MP4 bytes are sent as a document.
-        parts.extend([('--'+boundary+'\r\nContent-Disposition: form-data; name="document"; filename="video.mp4"\r\nContent-Type: video/mp4\r\n\r\n').encode(),file,b'\r\n',('--'+boundary+'--\r\n').encode()])
+        filename=safe_part(Path(filename).stem,180)+'.mp4'
+        # Send the original bytes as a document with a sanitized descriptive name.
+        parts.extend([('--'+boundary+'\r\nContent-Disposition: form-data; name="document"; filename="'+filename+'"\r\nContent-Type: video/mp4\r\n\r\n').encode('utf-8'),file,b'\r\n',('--'+boundary+'--\r\n').encode()])
         payload=b''.join(parts);ctype='multipart/form-data; boundary='+boundary
     request=Request('https://api.telegram.org/bot'+token+'/'+method,data=payload,
                     headers={'Content-Type':ctype,'User-Agent':'TikTokZavodStudio'},method='POST')
@@ -99,7 +133,7 @@ def history_db():
         PRIMARY KEY(bot,chat,account,digest))""")
     return db
 
-def send_export(token,chats,path,settings,account,song,progress=None):
+def send_export(token,chats,path,settings,account,song,progress=None,exported_at=None,batch=None):
     """One future export hook; only confirmed MP4s, explicit destinations, exact bytes."""
     token=validate_token(token);ids=chat_ids(chats)
     if account not in ('1','2'):raise TelegramError('Неизвестный аккаунт.')
@@ -111,7 +145,7 @@ def send_export(token,chats,path,settings,account,song,progress=None):
     # Standard MP4 ISO BMFF header; reject non-video/unfinished arbitrary files.
     if len(video)<12 or video[4:8]!=b'ftyp':raise TelegramError('Файл не похож на готовый MP4.')
     digest=hashlib.sha256(video).hexdigest()
-    text=caption(settings,account,song,digest)
+    text=caption(settings,account,song,digest,p,exported_at if exported_at is not None else p.stat().st_mtime,batch)
     bot=token.split(':',1)[0];out=[]
     db=history_db()
     try:
@@ -127,7 +161,7 @@ def send_export(token,chats,path,settings,account,song,progress=None):
                 continue
             if progress:progress('Отправка MP4 в чат '+chat+'…')
             try:
-                result=api(token,'sendDocument',{'chat_id':chat,'caption':text},video)
+                result=api(token,'sendDocument',{'chat_id':chat,'caption':text},video,filename=p.name)
                 if not isinstance(result,dict) or not isinstance(result.get('message_id'),int):
                     raise UnknownDelivery('Нет ID сообщения. Проверь чат.')
             except UnknownDelivery as exc:

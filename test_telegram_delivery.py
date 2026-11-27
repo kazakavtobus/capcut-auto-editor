@@ -21,6 +21,7 @@ class TelegramTests(unittest.TestCase):
                 self.assertEqual([x[1] for x in result],['Отправлено','Отправлено'])
                 self.assertEqual(api.call_count,2)
                 self.assertEqual(api.call_args.args[3],data)
+                self.assertEqual(api.call_args.kwargs['filename'],'song.mp4')
                 self.assertIn('#UnisonMuz',api.call_args.args[2]['caption'])
                 self.assertEqual(api.call_args.args[1],'sendDocument')
                 t.send_export(TOKEN,'123,-100456',p,{},'1','Song')
@@ -42,3 +43,14 @@ class TelegramTests(unittest.TestCase):
         with patch.object(t,'api',side_effect=[{'username':'ZavodBot'},[{'message':{'chat':{'id':123,'first_name':'A'}}}]]) as api:
             self.assertEqual(t.discover(TOKEN),{'bot':'@ZavodBot','chats':{'123':'A'}})
             self.assertEqual([x.args[1] for x in api.call_args_list],['getMe','getUpdates'])
+
+    def test_batch_report_and_number(self):
+        caption=t.caption({},'2','Моя_песня','abc',Path('Аккаунт 2 — Моя песня — ролик 005.mp4'),0,'1234')
+        self.assertIn('Ролик №005',caption)
+        self.assertIn('Моя песня',caption)
+        self.assertIn('Партия 1234',caption)
+        rows=[{'account':'1','song':'Song'},{'account':'2','song':'Song'}]
+        report=t.batch_report({},rows,['Отправлено','rejected'],'test',222)
+        self.assertIn('1/2',report)
+        self.assertIn('3 мин 42 сек',report)
+        self.assertIn('Не подтверждено: 1',report)
