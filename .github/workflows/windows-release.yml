@@ -130,6 +130,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'LUT and updater validation failed' }
           python -m unittest discover -s tests -p test_preview_fonts.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Exact font validation failed' }
+      - name: Smoke test project cards
+        if: github.ref == 'refs/heads/studio-v9-remotion'
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m unittest discover -s tests -p test_preview_project_cards.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Project cards UI failed' }
       - name: Smoke test manual song library UI
         shell: pwsh
         env:

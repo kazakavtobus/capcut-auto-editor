@@ -1,9 +1,12 @@
 """Studio dialogs and neutral light/dark theme; no Pinterest dependencies."""
 from pathlib import Path
+from datetime import datetime
+import json, re
 from PySide6.QtCore import Qt, QThread, Signal, QSize, QUrl
 from PySide6.QtGui import QIcon,QDesktopServices
 from PySide6.QtWidgets import (QDialog,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,
-    QComboBox,QTableWidget,QTableWidgetItem,QHeaderView,QAbstractItemView,QFileDialog,QMessageBox)
+    QComboBox,QTableWidget,QTableWidgetItem,QHeaderView,QAbstractItemView,QFileDialog,QMessageBox,
+    QWidget,QFrame,QLineEdit,QScrollArea,QSizePolicy,QGridLayout)
 from studio_media import MediaLibrary,CATEGORIES
 
 def theme_style(dark=False):
@@ -128,29 +131,110 @@ class MediaDialog(QDialog):
         super().closeEvent(event)
 
 class ProjectsDialog(QDialog):
+    """Responsive project history with per-project actions and real export state."""
     def __init__(self,parent,root=None,settings=None):
-        super().__init__(parent);self.setWindowTitle('Проекты');self.resize(870,500)
-        l=QVBoxLayout(self);l.addWidget(QLabel('История локальных монтажей'))
+        super().__init__(parent);self.setWindowTitle('Проекты');self.resize(940,650)
+        from desktop_ui import label,panel,button,icon
+        self.host=parent;self.settings=dict(settings or {});self.library=MediaLibrary(root or None)
+        self.rows=[];self.cards=[];self.page_size=24;self.page=0
+        l=QVBoxLayout(self);l.setContentsMargins(28,24,28,24);l.setSpacing(16)
+        header=QHBoxLayout();titles=QVBoxLayout();titles.setSpacing(5)
+        titles.addWidget(label('Проекты','heading'))
+        subtitle=label('История монтажа, готовые видео и быстрый повторный экспорт.','muted');subtitle.setWordWrap(True)
+        titles.addWidget(subtitle);header.addLayout(titles,1)
+        header.addWidget(button('Обновить',self.refresh));l.addLayout(header)
+        metrics=QHBoxLayout();metrics.setSpacing(10);self.metrics={}
+        for key,title in [('all','Всего проектов'),('ready','Видео готово'),('draft','Без экспорта')]:
+            box=panel();v=QVBoxLayout(box);v.setContentsMargins(15,12,15,12);v.setSpacing(4)
+            v.addWidget(label(title,'muted'));value=label('0','metric');v.addWidget(value);self.metrics[key]=value;metrics.addWidget(box,1)
+        l.addLayout(metrics)
+        filters=QHBoxLayout();filters.setSpacing(8)
+        self.search=QLineEdit();self.search.setPlaceholderText('Найти песню или проект');self.search.addAction(icon('search'),QLineEdit.LeadingPosition);filters.addWidget(self.search,1)
         from account_names import account_name
-        self.rows=MediaLibrary(root or None).projects()
-        self.table=QTableWidget(len(self.rows),3);self.table.setHorizontalHeaderLabels(['ПРОЕКТ','АККАУНТ','ПУТЬ'])
-        self.table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows);self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        for i,r in enumerate(self.rows):
-            for j,t in enumerate((Path(r['path']).name,account_name(settings or {},r['account']),r['path'])):self.table.setItem(i,j,QTableWidgetItem(str(t)))
-        l.addWidget(self.table,1);l.addWidget(button('Открыть папку проекта',self.open_project,True))
-        l.addWidget(button('Автоэкспорт 1080p / 30 FPS',self.export_project,False))
-        l.addWidget(button('Отгрузить готовый MP4',self.deliver_project,False))
-    def export_project(self):
-        i=self.table.currentRow();host=self.window()
-        if 0<=i<len(self.rows) and hasattr(host,'begin_export'):host.begin_export([self.rows[i]['path']])
-    def deliver_project(self):
-        i=self.table.currentRow()
-        host=self.window()
-        if 0<=i<len(self.rows) and hasattr(host,'open_delivery'):host.open_delivery(self.rows[i])
-    def open_project(self):
-        i=self.table.currentRow()
-        if 0<=i<len(self.rows):QDesktopServices.openUrl(QUrl.fromLocalFile(self.rows[i]['path']))
+        self.account_filter=QComboBox();self.account_filter.addItem('Все аккаунты','')
+        for key in ('1','2'):self.account_filter.addItem(account_name(self.settings,key),key)
+        filters.addWidget(self.account_filter)
+        self.state_filter=QComboBox();self.state_filter.addItem('Все статусы','');self.state_filter.addItem('Видео готово','ready');self.state_filter.addItem('Без экспорта','draft');self.state_filter.addItem('Папка недоступна','missing');filters.addWidget(self.state_filter)
+        l.addLayout(filters)
+        self.scroll=QScrollArea();self.scroll.setWidgetResizable(True);self.scroll.setMinimumHeight(220)
+        self.body=QWidget();self.body.setObjectName('page');self.grid=QVBoxLayout(self.body);self.grid.setContentsMargins(0,0,8,0);self.grid.setSpacing(10)
+        self.scroll.setWidget(self.body);l.addWidget(self.scroll,1)
+        footer=QHBoxLayout();self.count_label=label('','muted');footer.addWidget(self.count_label,1)
+        self.prev=button('Назад',lambda:self.turn(-1));self.next=button('Далее',lambda:self.turn(1));footer.addWidget(self.prev);footer.addWidget(self.next);l.addLayout(footer)
+        self.search.textChanged.connect(self.reset_filter);self.account_filter.currentIndexChanged.connect(self.reset_filter);self.state_filter.currentIndexChanged.connect(self.reset_filter)
+        self.refresh()
+    def refresh(self,*args):
+        from native_export import receipt
+        from song_library import SongLibrary
+        from account_names import account_name
+        names={}
+        self.rows=[]
+        for raw in self.library.projects():
+            row=dict(raw);path=Path(row['path']);key=row.get('song','')
+            if key not in names:
+                names[key]=''
+                if re.fullmatch(r'[a-f0-9]{64}',str(key)):
+                    try:
+                        data=json.loads((SongLibrary().directory/(key+'.json')).read_text(encoding='utf-8'))
+                        names[key]=Path(data.get('filename','')).stem
+                    except (OSError,ValueError,TypeError):pass
+            row['title']=names[key] or path.name
+            row['account_label']=account_name(self.settings,str(row.get('account','1')))
+            try:exists=path.is_dir()
+            except OSError:exists=False
+            saved=receipt(path) if exists else None
+            row['receipt']=saved;row['state']='ready' if saved else 'draft' if exists else 'missing'
+            self.rows.append(row)
+        self.metrics['all'].setText(str(len(self.rows)))
+        self.metrics['ready'].setText(str(sum(r['state']=='ready' for r in self.rows)))
+        self.metrics['draft'].setText(str(sum(r['state']=='draft' for r in self.rows)))
+        self.page=0;self.render_cards()
+    def reset_filter(self,*args):
+        self.page=0;self.render_cards()
+    def turn(self,direction):
+        self.page=max(0,self.page+direction);self.render_cards()
+        self.scroll.verticalScrollBar().setValue(0)
+    def render_cards(self):
+        from desktop_ui import label,panel,button,icon
+        self.cards=[]
+        while self.grid.count():
+            item=self.grid.takeAt(0)
+            if item.widget():item.widget().deleteLater()
+        q=self.search.text().strip().casefold();account=self.account_filter.currentData();state=self.state_filter.currentData()
+        rows=[r for r in self.rows if (not account or str(r['account'])==account) and (not state or r['state']==state)
+              and q in (r['title']+' '+Path(r['path']).name+' '+r['account_label']).casefold()]
+        last=max(0,(len(rows)-1)//self.page_size);self.page=min(self.page,last);offset=self.page*self.page_size
+        for row in rows[offset:offset+self.page_size]:
+            card=panel();self.cards.append(card);v=QVBoxLayout(card);v.setContentsMargins(16,14,16,14);v.setSpacing(10)
+            top=QHBoxLayout();glyph=QLabel();glyph.setPixmap(icon('projects','#3478f6',30).pixmap(30,30));top.addWidget(glyph,0,Qt.AlignTop)
+            content=QVBoxLayout();content.setSpacing(5);name=label(row['title'],'cardHeading');name.setWordWrap(True);name.setToolTip(row['path']);content.addWidget(name)
+            try:date=datetime.fromtimestamp(float(row['created'])).strftime('%d.%m.%Y · %H:%M')
+            except (ValueError,TypeError,OSError,OverflowError):date='Дата неизвестна'
+            meta=label(row['account_label']+'  ·  '+date,'muted');meta.setWordWrap(True);content.addWidget(meta);top.addLayout(content,1)
+            status=label({'ready':'✓ Видео готово','draft':'Проект собран','missing':'Папка недоступна'}[row['state']],'successBadge' if row['state']=='ready' else 'muted');top.addWidget(status,0,Qt.AlignTop);v.addLayout(top)
+            actions=QGridLayout();actions.setHorizontalSpacing(8);actions.setVerticalSpacing(8)
+            folder=button('Папка проекта',lambda checked=False,r=row:self.open_project(r));folder.setEnabled(row['state']!='missing')
+            export=button('Экспортировать',lambda checked=False,r=row:self.export_project(r),row['state']=='draft');export.setEnabled(row['state']!='missing')
+            actions.addWidget(folder,0,0);actions.addWidget(export,0,1)
+            if row['state']=='ready':
+                video=button('Открыть MP4',lambda checked=False,r=row:self.open_video(r),False,'play')
+                deliver=button('К отгрузке',lambda checked=False,r=row:self.deliver_project(r),True,'send')
+                actions.addWidget(video,1,0);actions.addWidget(deliver,1,1)
+            v.addLayout(actions);self.grid.addWidget(card)
+        if not rows:
+            empty=label('Нет проектов по выбранным фильтрам.' if self.rows else 'Здесь появятся проекты после первого монтажа.','muted');empty.setAlignment(Qt.AlignCenter);empty.setWordWrap(True);self.grid.addWidget(empty)
+        self.grid.addStretch()
+        self.count_label.setText(f'{offset+1 if rows else 0}–{min(offset+self.page_size,len(rows))} из {len(rows)}')
+        self.prev.setEnabled(self.page>0);self.next.setEnabled(self.page<last)
+    def export_project(self,row):
+        if hasattr(self.host,'begin_export') and not self.host.busy():self.host.begin_export([row['path']])
+    def deliver_project(self,row):
+        if hasattr(self.host,'open_delivery'):self.host.open_delivery(row)
+    def open_project(self,row):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(row['path']))
+    def open_video(self,row):
+        saved=row.get('receipt')
+        if saved:QDesktopServices.openUrl(QUrl.fromLocalFile(saved['path']))
 
 
 class ProfileWorker(QThread):

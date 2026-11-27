@@ -1,5 +1,5 @@
 #define AppName "CapCut Auto Editor 9.0 Preview"
-#define AppVersion "9.0.2"
+#define AppVersion "9.0.3"
 [Setup]
 AppId={{7512998B-7421-432D-A898-9C42E6FC38D3}
 AppName={#AppName}

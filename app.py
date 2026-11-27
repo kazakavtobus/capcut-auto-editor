@@ -1342,6 +1342,9 @@ class MainWindow(QMainWindow):
                     title=Path(data.get('filename',title)).stem
             except (OSError,ValueError):pass
             self.tg_song.setText(title[:180])
+            saved=export_receipt(project['path'])
+            if saved:
+                self.tg_file.setText(saved['path']);self.tg_song.setText(saved['song'][:180]);self.telegram_preview()
 
     def telegram_pick(self):
         if self.busy():return
@@ -1533,6 +1536,8 @@ class MainWindow(QMainWindow):
         l.addWidget(c);l.addStretch()
 
     def check_updates(self):
+        if self.busy():
+            QMessageBox.information(self,'Выполняется задача','Проверка обновлений доступна после завершения обработки.');return
         if self.update_worker is not None and self.update_worker.isRunning():return
         self.updates_btn.setEnabled(False)
         self.updates_btn.setText('Проверяю GitHub…')
