@@ -118,6 +118,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Python compilation failed' }
           python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics test_studio test_telegram_delivery test_native_export test_export_names -v
           if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
+      - name: Test inaccessible project path
+        if: github.ref == 'refs/heads/studio-v9-remotion'
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p test_project_path_preview.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Project path validation failed' }
       - name: Smoke test manual song library UI
         shell: pwsh
         env:

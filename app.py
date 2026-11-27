@@ -52,6 +52,13 @@ except ImportError:
     QMediaPlayer = QAudioOutput = None
 
 SETTINGS = load_settings()
+
+def accessible_project_folder(value):
+    """Windows can raise WinError 448 for an inaccessible junction."""
+    if not value or not str(value).strip():return False
+    try:return Path(value).is_dir()
+    except (OSError,ValueError):return False
+
 SETTINGS['provider'] = 'local'
 SETTINGS['api_key'] = ''
 
@@ -1572,8 +1579,8 @@ class MainWindow(QMainWindow):
         except FileNotFoundError:
             self.note('Нужно один раз импортировать шаблон из папки предыдущей версии.')
             self.change_page(1)
-        if not Path(SETTINGS.get('projects_folder','')).is_dir():
-            self.note('Укажи путь к проектам CapCut в настройках (один раз).')
+        if not accessible_project_folder(SETTINGS.get('projects_folder','')):
+            self.note('Папка проектов недоступна. Укажи её реальный путь в настройках.')
             self.change_page(1)
 
     def open_profiles(self):
@@ -1603,13 +1610,14 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_FILE.parent)))
 
     def pick_folder(self):
-        p=QFileDialog.getExistingDirectory(self,'Папка проектов CapCut',self.folder.text())
+        current=self.folder.text().strip()
+        p=QFileDialog.getExistingDirectory(self,'Папка проектов CapCut',current if accessible_project_folder(current) else str(Path.home()))
         if p:self.folder.setText(p)
 
     def store_settings(self):
         p=self.folder.text().strip()
-        if not Path(p).is_dir():
-            QMessageBox.warning(self,'Папка не найдена','Выбери существующую папку проектов CapCut.');return False
+        if not accessible_project_folder(p):
+            QMessageBox.warning(self,'Папка недоступна','Выбери реальную папку проектов CapCut, без недоступной точки подключения.\n\n'+p);return False
         if self.busy():
             QMessageBox.warning(self,'Занято','Сначала заверши обработку.');return False
         try:names={a:validate_account_name(f.text()) for a,f in self.account_inputs.items()}
@@ -1659,8 +1667,11 @@ class MainWindow(QMainWindow):
             self.status.setText('Другая задача выполняется.');return
         if not self.audio or not Path(self.audio).is_file():
             QMessageBox.warning(self,'Нет музыки','Сначала выбери аудиофайл.');return
-        if not Path(SETTINGS.get('projects_folder','')).is_dir():
-            QMessageBox.warning(self,'Нет папки проектов','В настройках укажи папку проектов CapCut.')
+        if not accessible_project_folder(SETTINGS.get('projects_folder','')):
+            self.stage.setText('!  Папка проектов недоступна')
+            self.note('Проверь реальный путь к папке проектов в настройках.')
+            self.set_task('Папка проектов недоступна: '+str(SETTINGS.get('projects_folder','')),0)
+            QMessageBox.warning(self,'Папка проектов недоступна','Укажи реальную папку проектов CapCut в настройках.\n\n'+str(SETTINGS.get('projects_folder','')))
             self.change_page(1);return
         self._auto_export_requested=self.auto_export.isChecked()
         if self._auto_export_requested:
