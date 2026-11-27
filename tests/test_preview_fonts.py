@@ -34,6 +34,18 @@ class FontTests(unittest.TestCase):
                 with self.assertRaises(r.ExportError):r.import_caption_font('1',wrong)
                 with self.assertRaises(r.ExportError):r.import_caption_font('1',normal)
                 with self.assertRaises(r.ExportError):r.import_caption_font('2',normal)
+    def test_content_addressed_staging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);one=root/'one.ttf';two=root/'two.ttf'
+            fixture(one,'Inter Tight',600,True);fixture(two,'Onest',600,False)
+            first,a=r.stage_caption_font(one,r.CAPTION_FONTS['1'][0],root)
+            second,b=r.stage_caption_font(two,r.CAPTION_FONTS['2'][0],root)
+            again,c=r.stage_caption_font(one,r.CAPTION_FONTS['1'][0],root)
+            self.assertEqual(a['family'],'Inter Tight')
+            self.assertEqual(b['family'],'Onest')
+            self.assertNotEqual(a['sha256'],b['sha256'])
+            self.assertEqual(first,again)
+            self.assertEqual(a['sha256'],c['sha256'])
     def test_onest_and_missing_cyrillic(self):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)/'onest.ttf';fixture(p,'Onest',600,False)

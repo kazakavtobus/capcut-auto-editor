@@ -6,7 +6,7 @@ work=ROOT/'remotion-smoke';work.mkdir(exist_ok=True)
 public=work/'public';public.mkdir(exist_ok=True)
 def run(*args):
     subprocess.run(list(map(str,args)),check=True)
-font=Path(os.environ['WINDIR'])/'Fonts'/'arialbi.ttf'
+font=Path(os.environ['WINDIR'])/'Fonts'/'timesbi.ttf'
 shutil.copy2(font,public/'caption.ttf')
 run('ffmpeg','-hide_banner','-loglevel','error','-y','-f','lavfi','-i','testsrc2=size=360x640:rate=30:duration=1',
     '-an','-c:v','libx264','-pix_fmt','yuv420p',public/'clip.mp4')

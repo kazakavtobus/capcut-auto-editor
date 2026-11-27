@@ -23,6 +23,23 @@ const Caption=({item,fontFamily,fontStyle,fontWeight})=>{
       textShadow:'3px 3px 0 rgba(0,0,0,0.65)',opacity,transform:'scale('+scale+')'}}>{item.text}</div>
   </AbsoluteFill>;
 };
+// Compare actual Cyrillic pixels against an intentionally missing family.
+const verifyRenderedFont=(family,style,weight)=>{
+  const canvas=document.createElement('canvas');
+  canvas.width=1500;canvas.height=120;
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  const sample='Съешь ещё этих мягких булок Aa09';
+  const pixels=(name)=>{
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.font=style+' '+weight+' 60px "'+name+'", sans-serif';
+    ctx.fillStyle='#fff';ctx.fillText(sample,8,80);
+    return ctx.getImageData(0,0,canvas.width,canvas.height).data;
+  };
+  const actual=pixels(family),fallback=pixels('__StudioMissingFont__');
+  if(!actual.some((value,i)=>value!==fallback[i])){
+    throw Error('Caption font renders identically to system fallback: '+family);
+  }
+};
 const Movie=({videos,captions,audio,font,fontFamily='StudioCaptionExact',fontStyle='normal',fontWeight=600})=>{
   const [handle]=useState(()=>delayRender('Loading exact local caption font'));
   useEffect(()=>{
@@ -36,6 +53,7 @@ const Movie=({videos,captions,audio,font,fontFamily='StudioCaptionExact',fontSty
       if(face.status!=='loaded'||!loaded.includes(face)||!document.fonts.check(descriptor,'АБВабвЁёABCabc012')){
         throw Error('Exact caption font failed to load: '+fontFamily+' '+fontStyle+' '+fontWeight);
       }
+      verifyRenderedFont(fontFamily,fontStyle,fontWeight);
       continueRender(handle);
     };
     load().catch(e=>cancelRender(e));

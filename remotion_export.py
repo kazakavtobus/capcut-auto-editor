@@ -207,6 +207,24 @@ def import_caption_font(account,source):
     finally:temp.unlink(missing_ok=True)
     return target
 
+def stage_caption_font(source,expected,public):
+    """Use a content-addressed, fixed-weight font and report its real identity."""
+    from fontTools.ttLib import TTFont
+    from fontTools.varLib.instancer import instantiateVariableFont
+    with TTFont(str(source),recalcTimestamp=False) as font:
+        axes={a.axisTag:a.defaultValue for a in font['fvar'].axes} if 'fvar' in font else {}
+        if 'wght' in axes:axes['wght']=600
+        if axes:instantiateVariableFont(font,axes,inplace=True)
+        staged=public/('caption-stage'+source.suffix.lower())
+        font.save(str(staged))
+        family=font['name'].getDebugName(16) or font['name'].getDebugName(1)
+        full=font['name'].getDebugName(4) or expected
+    _validate_font(staged,expected)
+    digest=hashlib.sha256(staged.read_bytes()).hexdigest()
+    target=public/('caption-'+digest[:20]+source.suffix.lower())
+    staged.replace(target)
+    return target,{'family':family,'full_name':full,'sha256':digest,'source':str(source)}
+
 def caption_font_status(account):
     name,_=CAPTION_FONTS[str(account)]
     try:
@@ -304,9 +322,13 @@ def stage_assets(plan,work,settings,progress=lambda _:None):
     progress('Remotion: проверяю шрифт и LUT')
     expected=plan.pop('fontName')
     font=find_font(expected,''.join(c['text'] for c in plan['captions']))
-    progress('Remotion: точный шрифт '+expected)
-    font_name='caption'+font.suffix.lower();shutil.copy2(font,public/font_name);plan['font']=font_name
-    plan['fontFamily']='StudioCaptionExact'+plan['account']
+    staged,audit=stage_caption_font(font,expected,public)
+    plan['font']=staged.name
+    plan['fontFamily']='StudioCaptionExact'+plan['account']+'_'+audit['sha256'][:16]
+    plan['fontAudit']=audit
+    message=f"Шрифт аккаунта {plan['account']}: {audit['family']} · {audit['full_name']} · 600 {plan['fontStyle']} · SHA256 {audit['sha256'][:16]}"
+    logging.getLogger('capcut_auto_editor').info('%s · источник %s',message,audit['source'])
+    progress(message)
     lut_digest='none'
     if any(v['lut'] for v in plan['videos']):
         shutil.copy2(find_lut(settings),work/'lut.cube')
@@ -379,5 +401,5 @@ def render_batch_background(projects,settings,progress=None):
     except Exception as exc:return {'rows':[],'error':str(exc),'remaining':list(map(str,projects))}
     def exporter(project,config):
         def start(p,folder):render_to_folder(p,folder,config,node,progress or (lambda _:None))
-        return export_one(project,config,start=start,engine='remotion-font-v2')
+        return export_one(project,config,start=start,engine='remotion-font-v3')
     return export_batch(projects,settings,progress,exporter=exporter,close=lambda *a,**kw:None)
