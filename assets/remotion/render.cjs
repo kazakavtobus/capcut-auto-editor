@@ -11,14 +11,14 @@ function canUseNvenc(ffmpeg,mode){
   return false;
 }
 (async()=>{
-  const [manifest,publicDir,output,mode='cpu',ffmpeg]=process.argv.slice(2);
+  const [manifest,publicDir,output,mode='cpu',ffmpeg,browserExecutable]=process.argv.slice(2);
   if(!manifest||!publicDir||!output||!['cpu','auto'].includes(mode))throw Error('Expected manifest, media directory, output and optional cpu/auto mode.');
   const inputProps=JSON.parse(fs.readFileSync(manifest,'utf8'));
   const gpu=canUseNvenc(ffmpeg,mode);
   const serveUrl=await bundle({entryPoint:path.join(__dirname,'index.jsx'),publicDir:path.resolve(publicDir)});
   try{
-    const composition=await selectComposition({serveUrl,id:'StudioMovie',inputProps});
-    const options={composition,serveUrl,inputProps,codec:'h264',audioCodec:'aac',outputLocation:path.resolve(output),
+    const composition=await selectComposition({serveUrl,id:'StudioMovie',inputProps,browserExecutable});
+    const options={composition,serveUrl,inputProps,browserExecutable,codec:'h264',audioCodec:'aac',outputLocation:path.resolve(output),
       concurrency:2,videoBitrate:'10M',audioBitrate:'192k',pixelFormat:'yuv420p'};
     async function render(useGpu){
       let last=-1;

@@ -1,11 +1,11 @@
-#define AppName "CapCut Auto Editor"
+#define AppName "CapCut Auto Editor 9.0 Preview"
 #define AppVersion "9.0.0"
 [Setup]
-AppId={{F3CD2BD4-6442-4B0D-AD86-A948819B66E6}
+AppId={{7512998B-7421-432D-A898-9C42E6FC38D3}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=CapCut Auto Editor Community
-DefaultDirName={localappdata}\Programs\CapCutAutoEditor
+DefaultDirName={localappdata}\Programs\CapCutAutoEditor9Preview
 DefaultGroupName={#AppName}
 OutputDir=..\dist\release
 OutputBaseFilename=CapCutAutoEditor_Setup

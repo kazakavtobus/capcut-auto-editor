@@ -5,6 +5,7 @@ on:
       - main
       - studio-v8
       - studio-v81
+      - studio-v9-remotion
     tags:
       - 'v*'
   workflow_dispatch:
@@ -52,6 +53,10 @@ jobs:
         with:
           python-version: '3.11'
           architecture: x64
+      - uses: actions/setup-node@v4
+        if: github.ref == 'refs/heads/studio-v9-remotion'
+        with:
+          node-version: '22'
       - name: Validate release tag and version
         shell: pwsh
         run: |
@@ -78,6 +83,28 @@ jobs:
           & "$deps/node_modules/.bin/esbuild.cmd" "$deps/compose.js" --bundle --minify --outfile=assets/composition.bundle.js
           if ($LASTEXITCODE -ne 0) { throw 'Three.js bundle failed' }
           Copy-Item "$deps/node_modules/three/LICENSE" 'assets/three-LICENSE.txt'
+      - name: Prepare offline Remotion runtime
+        if: github.ref == 'refs/heads/studio-v9-remotion'
+        shell: pwsh
+        working-directory: assets/remotion
+        run: |
+          & npm.cmd install --omit=dev --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Remotion installation failed' }
+          # Use the exact same Chrome version that passed the prototype.
+          $archive = Join-Path $env:RUNNER_TEMP 'studio-chromium.zip'
+          $unpacked = Join-Path $env:RUNNER_TEMP 'studio-chromium'
+          Invoke-WebRequest -Uri 'https://remotion.media/chromium-headless-shell-win-x64-158.0.8127.2.zip?clear' -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $unpacked -Force
+          $chrome = @(Get-ChildItem -LiteralPath $unpacked -Recurse -File -Filter chrome-headless-shell.exe)
+          if ($chrome.Count -ne 1) { throw 'Expected exactly one Chromium executable' }
+          $runtime = Join-Path $env:RUNNER_TEMP 'studio-remotion-runtime'
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination "$runtime/node.exe"
+          Copy-Item package.json,index.jsx,render.cjs -Destination $runtime
+          Copy-Item -LiteralPath 'node_modules' -Destination "$runtime/node_modules" -Recurse
+          Copy-Item -LiteralPath $chrome[0].Directory.FullName -Destination "$runtime/browser" -Recurse
+          if (!(Test-Path "$runtime/browser/chrome-headless-shell.exe")) { throw 'Browser copy failed' }
+          "STUDIO_REMOTION_RUNTIME=$runtime" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Run unit tests and validate source
         shell: pwsh
         run: |
@@ -87,7 +114,7 @@ jobs:
           $errors = $null; $tokens = $null
           [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'assets/capcut_visual_export.ps1'),[ref]$tokens,[ref]$errors) | Out-Null
           if ($errors) { throw ($errors | Out-String) }
-          python -m py_compile native_export.py app.py manual_lyrics.py studio_media.py studio_pipeline.py studio_ui.py studio_profiles.py desktop_ui.py composition_preview.py builder.py
+          python -m py_compile remotion_export.py native_export.py app.py manual_lyrics.py studio_media.py studio_pipeline.py studio_ui.py studio_profiles.py desktop_ui.py composition_preview.py builder.py
           if ($LASTEXITCODE -ne 0) { throw 'Python compilation failed' }
           python -m unittest test_v73 test_semantic test_regression test_editor test_song_library test_project_reuse test_manual_lyrics test_studio test_telegram_delivery test_native_export test_export_names -v
           if ($LASTEXITCODE -ne 0) { throw 'Unit tests failed' }
@@ -117,6 +144,11 @@ jobs:
           name: Studio-Visual-Regression
           path: visual-results/
           if-no-files-found: ignore
+      - name: Move runtime out of assets before packaging
+        if: github.ref == 'refs/heads/studio-v9-remotion'
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath 'assets/remotion/node_modules' -Recurse -Force
       - name: Build PyInstaller app (no private templates or personal files)
         shell: pwsh
         run: |
@@ -165,10 +197,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Unable to create test source video' }
           & '.\\dist\\CapCutAutoEditor\\CapCutAutoEditor.exe' --self-test-video $sample
           if ($LASTEXITCODE -ne 0) { throw "Packaged EXE failed video conversion (exit $LASTEXITCODE)" }
+      - name: Attach offline runtime and test its render
+        if: github.ref == 'refs/heads/studio-v9-remotion'
+        shell: pwsh
+        run: |
+          $destination = Join-Path (Resolve-Path 'dist/CapCutAutoEditor').Path 'remotion-runtime'
+          Copy-Item -LiteralPath $env:STUDIO_REMOTION_RUNTIME -Destination $destination -Recurse
+          $env:STUDIO_SMOKE_RUNTIME = $destination
+          python tests/remotion_smoke.py
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled Remotion runtime smoke failed' }
       - name: Package Windows installer
         shell: pwsh
         run: |
           & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' 'installer\capcut.iss'
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
           $installer = 'dist\release\CapCutAutoEditor_Setup.exe'
           if (!(Test-Path $installer)) { throw 'Installer missing' }
           $checksum = (Get-FileHash -Path $installer -Algorithm SHA256).Hash.ToLowerInvariant()

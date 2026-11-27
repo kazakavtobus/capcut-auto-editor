@@ -9,7 +9,7 @@ const VideoLayer=({item,previousTransition})=>{
   const blur=12*Math.max(incoming?1-clip(frame/incoming):0,outgoing?clip((frame-item.frames+outgoing)/outgoing):0);
   return <AbsoluteFill style={{overflow:'hidden',backgroundColor:'#000'}}>
     <OffthreadVideo src={staticFile(item.file)} muted trimBefore={item.sourceFrame}
-      style={{width:'100%',height:'100%',objectFit:'cover',filter:'blur('+blur+'px)',transform:'scale('+ (blur?1.035:1) +')'}} />
+      style={{width:'100%',height:'100%',objectFit:'cover',filter:'blur('+blur+'px)',transform:'scale('+ (blur?1.035:1) +') scaleX('+(item.flip?-1:1)+')'}} />
   </AbsoluteFill>;
 };
 const Caption=({item})=>{

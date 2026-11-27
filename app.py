@@ -1474,6 +1474,8 @@ class MainWindow(QMainWindow):
         l.addWidget(c);l.addStretch()
 
     def check_updates(self):
+        QMessageBox.information(self,'Studio 9.0 Preview','Тестовые сборки устанавливаются отдельно через GitHub Actions. Автообновление стабильного канала отключено в этой версии.')
+        return
         if self.update_worker is not None and self.update_worker.isRunning():return
         self.updates_btn.setEnabled(False)
         self.updates_btn.setText('Проверяю GitHub…')

@@ -8,6 +8,10 @@ from builder import media_info
 FPS=30
 ASSETS=Path(__file__).resolve().parent/'assets'/'remotion'
 RUNTIME=APPDATA/'remotion'
+BUNDLED=Path(sys.executable).resolve().parent/'remotion-runtime'
+
+def bundled_runtime():
+    return BUNDLED if getattr(sys,'frozen',False) and (BUNDLED/'node.exe').is_file() else None
 LUT_NAME='Clayton 33.CUBE'
 
 def frame(us):return round(int(us)*FPS/1_000_000)
@@ -45,7 +49,7 @@ def timeline(project):
         videos.append(dict(path=str(local_material(project,maps['videos'][seg['material_id']])),start=start,frames=frames,
             sourceFrame=frame(seg['source_timerange']['start']),transition=frame(transition.get('duration',0)),
             brightness=float(effects.get('brightness',0) or 0),contrast=float(effects.get('contrast',0) or 0),
-            lut=bool(effects.get('lut',0))))
+            lut=bool(effects.get('lut',0)),flip=bool((seg.get('clip') or {}).get('flip',{}).get('horizontal',False))))
     if expected!=duration:raise ExportError('Remotion: видеоряд не совпадает с длительностью проекта.')
     font=None
     for seg in tracks[1]['segments']:
@@ -64,7 +68,7 @@ def timeline(project):
         exit=next((frame(a['duration']) for a in anims if a.get('type')=='out'),0)
         # Calibrated approximate CSS pixel size; CapCut's font unit is not CSS pixels.
         captions.append(dict(start=start,frames=frames,text=content['text'],fontSize=float(text.get('font_size',15))*4.6,
-            color=text.get('text_color','#ffffff'),x=float(transform.get('x',0))*540,y=-float(transform.get('y',0))*960,
+            color=text.get('text_color','#ffffff'),italic='italic' in filename.lower(),x=float(transform.get('x',0))*540,y=-float(transform.get('y',0))*960,
             enter=min(enter,frames),exit=min(exit,frames)))
     if not font or not captions:raise ExportError('Remotion: нет субтитров или шрифта.')
     if len(tracks[2]['segments'])!=1:raise ExportError('Remotion: нужна одна музыкальная дорожка.')
@@ -103,6 +107,11 @@ def run_command(args,cwd,timeout=1800):
     return proc.stdout
 
 def prepare_runtime():
+    packaged=bundled_runtime()
+    if packaged:
+        for name in ('render.cjs','index.jsx','node_modules/remotion/package.json','browser/chrome-headless-shell.exe'):
+            if not (packaged/name).is_file():raise ExportError('Неполная установка Remotion: '+name)
+        return str(packaged/'node.exe')
     node=shutil.which('node')
     if not node:raise ExportError('Установи Node.js 22 LTS, затем перезапусти Studio.')
     if int(run_command([node,'--version'],ASSETS,30).strip().lstrip('v').split('.')[0])<22:
@@ -155,7 +164,11 @@ def render_to_folder(project,folder,settings,node=None):
     with tempfile.TemporaryDirectory(prefix='remotion-',dir=folder) as tmp:
         work=Path(tmp);manifest,public=stage_assets(plan,work,settings)
         output=Path(folder)/'video.mp4'
-        run_command([node,RUNTIME/'render.cjs',manifest,public,output,'auto',ffmpeg_exe()],RUNTIME,3600)
+        runtime=bundled_runtime() or RUNTIME
+        browser=runtime/'browser'/'chrome-headless-shell.exe'
+        args=[node,runtime/'render.cjs',manifest,public,output,'auto',ffmpeg_exe()]
+        if browser.is_file():args.append(browser)
+        run_command(args,runtime,3600)
     if not output.is_file():raise ExportError('Remotion не создал MP4.')
 
 def render_batch_background(projects,settings,progress=None):
