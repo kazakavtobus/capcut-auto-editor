@@ -34,6 +34,7 @@ from desktop_ui import MediaPage, SongsPage, Ring, ProjectCount, icon, apply_app
 from composition_preview import CompositionPreview
 from account_names import account_name,validate_account_name
 from native_export import export_batch,receipt as export_receipt,verify_mp4,file_digest,export_root,activate_capcut_from_studio
+from remotion_export import render_batch_background
 from export_names import manual_metadata
 from telegram_delivery import load_config as load_telegram,save_config as save_telegram,discover as discover_telegram,send_export,caption as telegram_caption,chat_ids,validate_token
 from subtitle_editor import _project_data, apply_changes
@@ -292,7 +293,8 @@ class ExportWorker(QThread):
     def __init__(self,projects,settings):
         super().__init__();self.projects=list(projects);self.settings=dict(settings)
     def run(self):
-        self.ready.emit(export_batch(self.projects,self.settings,self.update.emit))
+        renderer=render_batch_background if self.settings.get('export_engine','remotion')=='remotion' else export_batch
+        self.ready.emit(renderer(self.projects,self.settings,self.update.emit))
 
 class DeliveryBatchWorker(QThread):
     ready=Signal(object)
@@ -1083,9 +1085,14 @@ class MainWindow(QMainWindow):
             h.addWidget(n)
             pl.addLayout(h);profiles.addWidget(c,1)
         l.addLayout(profiles)
-        self.auto_export=QCheckBox('Автоэкспорт CapCut · 1080×1920 / 30 FPS (экспериментально)')
+        self.auto_export=QCheckBox('Автоэкспорт · 1080×1920 / 30 FPS')
         self.auto_export.setChecked(SETTINGS.get('auto_export',False));self.auto_export.toggled.connect(self.save_export_mode)
         l.addWidget(self.auto_export)
+        engine_row=horizontal(space=8)
+        self.export_engine=QComboBox();self.export_engine.addItem('Remotion · в фоне (прототип)','remotion');self.export_engine.addItem('CapCut · резервный','capcut')
+        self.export_engine.setCurrentIndex(1 if SETTINGS.get('export_engine')=='capcut' else 0)
+        self.export_engine.currentIndexChanged.connect(self.save_export_engine)
+        engine_row.addWidget(self.export_engine,1);engine_row.addWidget(btn('Выбрать LUT','secondary',self.pick_remotion_lut));l.addLayout(engine_row)
         l.addWidget(label('Только для проверенных песен. После экспорта отправка требует подтверждения.','muted',True))
         control=horizontal(space=10);self.build_btn=btn('Создать проект CapCut','primary',self.start);self.build_btn.setMinimumHeight(50);control.addWidget(self.build_btn,1)
         self.project_btn=btn('Последний проект','secondary',self.open_project_folder);self.project_btn.setEnabled(False);control.addWidget(self.project_btn);l.addLayout(control)
@@ -1098,15 +1105,24 @@ class MainWindow(QMainWindow):
     def save_export_mode(self,enabled):
         SETTINGS['auto_export']=bool(enabled);save_settings(SETTINGS)
 
+    def save_export_engine(self,*args):
+        SETTINGS['export_engine']=self.export_engine.currentData();save_settings(SETTINGS)
+
+    def pick_remotion_lut(self):
+        if self.busy():return
+        path,_=QFileDialog.getOpenFileName(self,'Локальный LUT Clayton 33',SETTINGS.get('remotion_lut',''),'LUT (*.cube *.CUBE)')
+        if path:SETTINGS['remotion_lut']=path;save_settings(SETTINGS);self.note('LUT сохранён: '+Path(path).name)
+
     def begin_export(self,projects):
         if self.busy() or not projects:return
         self.export_worker=ExportWorker(projects,SETTINGS)
         self.export_worker.update.connect(lambda msg:self.set_task(msg,None))
         self.export_worker.ready.connect(self.export_finished)
-        self.set_task('Автоэкспорт CapCut · 1080p / 30 FPS',None)
+        self._export_engine_running=SETTINGS.get('export_engine','remotion')
+        self.set_task('Автоэкспорт '+self._export_engine_running+' · 1080p / 30 FPS',None)
         # Set foreground from the interactive GUI, not only a hidden PowerShell process.
         # Yield the screen for the visual exporter; restore it when the batch ends.
-        if sys.platform=='win32':
+        if sys.platform=='win32' and self._export_engine_running=='capcut':
             self._export_was_maximized=self.isMaximized()
             self.note('На время автоэкспорта Studio сворачивается. Если CapCut не открылся, переключись на него через панель задач или Alt+Tab и оставь открытым.')
             activate_capcut_from_studio()
@@ -1118,7 +1134,7 @@ class MainWindow(QMainWindow):
         self.begin_export(list(self.retry_export_paths))
 
     def export_finished(self,result):
-        if sys.platform=='win32' and self.isMinimized():
+        if sys.platform=='win32' and getattr(self,'_export_engine_running','capcut')=='capcut' and self.isMinimized():
             if getattr(self,'_export_was_maximized',False):self.showMaximized()
             else:self.showNormal()
             self.raise_();self.activateWindow()
@@ -1130,7 +1146,8 @@ class MainWindow(QMainWindow):
             self.set_task('Экспорт остановлен: '+result['error'],0)
             self.tg_batch_status.setText('Готово: '+str(len(rows))+'; '+result['error']+'\nОставшиеся проекты доступны в истории.')
             self.last_export_error=result['error']
-            QMessageBox.warning(self,'Автоэкспорт остановлен',result['error']+'\n\nПроекты сохранены. Раздел «Обработка» → журнал ошибок.')
+            if getattr(self,'_export_engine_running','capcut')=='capcut':
+                QMessageBox.warning(self,'Автоэкспорт остановлен',result['error']+'\n\nПроекты сохранены. Раздел «Обработка» → журнал ошибок.')
         else:
             self.set_task('Экспорт завершён: '+str(len(rows)),100)
             self.tg_batch_status.setText('Готово к проверке: '+str(len(rows))+'. Отметь ролики и подтверди отправку.')

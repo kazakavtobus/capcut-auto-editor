@@ -1,0 +1,42 @@
+name: Remotion prototype smoke
+on:
+  push:
+    branches: [studio-v9-remotion]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: remotion-prototype-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  render:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install rendering dependencies
+        shell: pwsh
+        run: |
+          npm install --prefix assets/remotion --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
+          choco install ffmpeg --yes --no-progress
+      - name: Python compilation
+        run: python -m py_compile remotion_export.py native_export.py app.py auto_pipeline.py
+      - name: Render synthetic reference
+        shell: pwsh
+        run: |
+          python tests/remotion_smoke.py
+          if ($LASTEXITCODE -ne 0) { throw 'Remotion render smoke failed' }
+      - name: Upload actual video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Remotion-smoke-MP4
+          path: remotion-smoke/output.mp4
+          if-no-files-found: ignore

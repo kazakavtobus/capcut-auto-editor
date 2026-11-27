@@ -175,10 +175,12 @@ def receipt(project):
     except (OSError,ValueError,KeyError,TypeError):pass
     return None
 
-def export_one(project,settings,start=native_command,wait=wait_export):
+def export_one(project,settings,start=native_command,wait=wait_export,engine='capcut'):
     info=project_info(project);existing=receipt(project)
-    if existing and existing.get('draft_sha256')==info['draft_sha256']:
-        try:verify_mp4(existing['path'],info['duration']);return existing
+    if existing and existing.get('draft_sha256')==info['draft_sha256'] and existing.get('engine','capcut')==engine:
+        try:
+            verify_mp4(existing['path'],info['duration'])
+            if file_digest(existing['path'])==existing.get('export_sha256'):return existing
         except ExportError:pass
     root=export_root(settings)
     folder=root/'.pending'/uuid.uuid4().hex
@@ -189,7 +191,7 @@ def export_one(project,settings,start=native_command,wait=wait_export):
     info['draft_sha256']=hashlib.sha256((Path(project)/'draft_content.json').read_bytes()).hexdigest()
     digest=file_digest(p)
     p=publish_export(p,root,settings,info['account'],info['song'])
-    row=dict(info,path=str(p.resolve()),export_sha256=digest)
+    row=dict(info,path=str(p.resolve()),export_sha256=digest,engine=engine)
     dst=Path(project)/'AutoAssets'/'export.json';tmp=dst.with_suffix('.tmp')
     tmp.write_text(json.dumps(row,ensure_ascii=False,indent=2),encoding='utf-8');tmp.replace(dst)
     try:folder.rmdir()
