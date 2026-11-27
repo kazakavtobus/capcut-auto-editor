@@ -127,7 +127,9 @@ jobs:
           python -m unittest discover -s tests -p test_preview_songs.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Song storage tests failed' }
           python -m unittest discover -s tests -p test_preview_lut_updater.py -v
-          if ($LASTEXITCODE -ne 0) { throw 'Project path validation failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'LUT and updater validation failed' }
+          python -m unittest discover -s tests -p test_preview_fonts.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Exact font validation failed' }
       - name: Smoke test manual song library UI
         shell: pwsh
         env:

@@ -34,7 +34,7 @@ from desktop_ui import MediaPage, SongsPage, Ring, ProjectCount, icon, apply_app
 from composition_preview import CompositionPreview
 from account_names import account_name,validate_account_name
 from native_export import export_batch,receipt as export_receipt,verify_mp4,file_digest,export_root,activate_capcut_from_studio
-from remotion_export import render_batch_background, import_lut, lut_label
+from remotion_export import render_batch_background, import_lut, lut_label, import_caption_font, caption_font_status
 from export_names import manual_metadata
 from telegram_delivery import load_config as load_telegram,save_config as save_telegram,discover as discover_telegram,send_export,caption as telegram_caption,chat_ids,validate_token
 from subtitle_editor import _project_data, apply_changes
@@ -1130,6 +1130,15 @@ class MainWindow(QMainWindow):
     def save_export_engine(self,*args):
         SETTINGS['export_engine']=self.export_engine.currentData();save_settings(SETTINGS)
 
+    def pick_caption_font(self,account):
+        if self.busy():return
+        path,_=QFileDialog.getOpenFileName(self,'Точный шрифт для '+account_name(SETTINGS,account),'','Шрифты (*.ttf *.otf)')
+        if not path:return
+        try:
+            import_caption_font(account,path);self.font_status[account].setText(caption_font_status(account))
+        except Exception as exc:
+            report_exception(exc,'Импорт шрифта');QMessageBox.warning(self,'Шрифт не подходит',str(exc))
+
     def pick_remotion_lut(self):
         if self.busy():return
         path,_=QFileDialog.getOpenFileName(self,'Локальный LUT Clayton 33',SETTINGS.get('remotion_lut',''),'LUT (*.cube *.CUBE)')
@@ -1490,6 +1499,10 @@ class MainWindow(QMainWindow):
             field=QLineEdit(account_name(SETTINGS,key));field.setMaxLength(40);self.account_inputs[key]=field;lt.addWidget(field)
         lt.addWidget(label('Отдельный эталонный проект CapCut для каждого аккаунта: шрифт, позиция текста, анимации и переходы.','muted',True))
         lt.addWidget(btn('Управление эталонами','primary',self.open_profiles))
+        self.font_status={}
+        for account in ('1','2'):
+            row=horizontal(space=8);status=label(caption_font_status(account),'muted',True);self.font_status[account]=status
+            row.addWidget(status,1);row.addWidget(btn('Импорт шрифта','secondary',lambda checked=False,key=account:self.pick_caption_font(key)));lt.addLayout(row)
         l.addWidget(local_template)
         storage=card();sl=vertical(storage,10,(23,20,23,20))
         sl.addWidget(label('ЛОКАЛЬНОЕ ХРАНИЛИЩЕ','micro'))

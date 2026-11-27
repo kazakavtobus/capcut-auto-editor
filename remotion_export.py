@@ -77,7 +77,12 @@ def timeline(project):
     audio=dict(path=str(local_material(project,maps['audios'][seg['material_id']])),start=start,frames=frames,
         sourceFrame=frame(seg['source_timerange']['start']),volume=float(seg.get('volume',1)))
     if start!=0 or frames!=duration:raise ExportError('Remotion: музыка должна покрывать весь проект.')
-    return dict(durationFrames=duration,videos=videos,captions=captions,audio=audio,fontName=font)
+    account=str(json.loads((Path(project)/'AutoAssets'/'sources.json').read_text(encoding='utf-8')).get('account',''))
+    if account not in CAPTION_FONTS:raise ExportError('Не определён аккаунт для выбора шрифта.')
+    expected,style=CAPTION_FONTS[account]
+    # Explicit per-account style takes priority over inconsistent CapCut metadata.
+    for caption in captions:caption['italic']=style=='italic'
+    return dict(durationFrames=duration,videos=videos,captions=captions,audio=audio,fontName=expected,fontStyle=style,fontWeight=600,account=account)
 
 LUT_DIR=APPDATA/'remotion'/'luts'
 CACHE_DIR=APPDATA/'remotion'/'clip-cache'
@@ -129,13 +134,85 @@ def find_lut(settings):
         except OSError:continue
     raise ExportError('Помести Clayton 33.CUBE в '+str(APPDATA/'remotion')+' или укажи путь remotion_lut в настройках.')
 
-def find_font(name):
-    if Path(name).name!=name:raise ExportError('Некорректное имя шрифта.')
-    candidates=[Path(os.environ.get('WINDIR','C:/Windows'))/'Fonts'/name,
-        Path(os.environ.get('LOCALAPPDATA',str(Path.home())))/'Microsoft'/'Windows'/'Fonts'/name]
-    for p in candidates:
-        if p.is_file():return p
-    raise ExportError('Установи точный шрифт из эталона: '+name)
+CAPTION_FONTS={'1':('InterTight-SemiBoldItalic.ttf','italic'),'2':('Onest-SemiBold.ttf','normal')}
+FONT_DIR=APPDATA/'remotion'/'fonts'
+
+def _font_signature(name):
+    if name==CAPTION_FONTS['1'][0]:return 'intertight',True
+    if name==CAPTION_FONTS['2'][0]:return 'onest',False
+    raise ExportError('Неизвестный профиль шрифта: '+str(name))
+
+def _validate_font(path,name,text=''):
+    from fontTools.ttLib import TTFont
+    family,italic=_font_signature(name)
+    try:
+        with TTFont(str(path),lazy=True) as font:
+            names=[''.join(c for c in (font['name'].getDebugName(i) or '').lower() if c.isalnum()) for i in (1,4,6,16)]
+            if not any(n.startswith(family) for n in names):raise ValueError('неверное семейство')
+            os2=font['OS/2']
+            actual_italic=bool(os2.fsSelection&1) or bool(font['head'].macStyle&2) or bool(font['post'].italicAngle)
+            if actual_italic!=italic:raise ValueError('неверное курсивное начертание')
+            axes={a.axisTag:a for a in font['fvar'].axes} if 'fvar' in font else {}
+            if 'wght' in axes:
+                if not axes['wght'].minValue<=600<=axes['wght'].maxValue:raise ValueError('нет веса 600')
+            elif os2.usWeightClass!=600:raise ValueError('нужен SemiBold (600)')
+            chars=font.getBestCmap() or {}
+            missing=sorted({c for c in text if c.isalnum() and ord(c) not in chars})
+            if missing:raise ValueError('отсутствуют символы: '+''.join(missing)[:40])
+    except Exception as exc:raise ExportError(f'{path.name}: {exc}') from exc
+    return Path(path)
+
+def _font_candidates(name):
+    family,_=_font_signature(name)
+    roots=[FONT_DIR,Path(os.environ.get('WINDIR','C:/Windows'))/'Fonts',
+           Path(os.environ.get('LOCALAPPDATA',str(Path.home())))/'Microsoft'/'Windows'/'Fonts']
+    for root in roots:
+        for suffix in ('.ttf','.otf'):
+            yield root/(Path(name).stem+suffix)
+        try:
+            for p in root.iterdir():
+                if p.suffix.lower() in ('.ttf','.otf') and family in ''.join(c for c in p.stem.lower() if c.isalnum()):yield p
+        except OSError:pass
+    if os.name=='nt':
+        import winreg
+        for hive,root in ((winreg.HKEY_LOCAL_MACHINE,roots[1]),(winreg.HKEY_CURRENT_USER,roots[2])):
+            try:
+                with winreg.OpenKey(hive,r'SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts') as k:
+                    for i in range(winreg.QueryInfoKey(k)[1]):
+                        label,value,_=winreg.EnumValue(k,i)
+                        if family in ''.join(c for c in label.lower() if c.isalnum()) and isinstance(value,str):
+                            p=Path(os.path.expandvars(value));yield p if p.is_absolute() else root/p
+            except OSError:pass
+
+def find_font(name,text=''):
+    seen=set()
+    for p in _font_candidates(name):
+        if p in seen:continue
+        seen.add(p)
+        try:
+            if p.is_file():return _validate_font(p,name,text)
+        except (OSError,ExportError):continue
+    raise ExportError('Не найден точный шрифт '+name+' с нужными символами. Настройки → Профили аккаунтов → Импорт шрифта (.ttf/.otf).')
+
+def import_caption_font(account,source):
+    name,_=CAPTION_FONTS[str(account)]
+    source=Path(source)
+    if source.suffix.lower() not in ('.ttf','.otf') or source.stat().st_size>30_000_000:
+        raise ExportError('Выбери файл шрифта TTF или OTF.')
+    _validate_font(source,name,'АБВабвЁёABCabc012')
+    FONT_DIR.mkdir(parents=True,exist_ok=True)
+    target=FONT_DIR/(Path(name).stem+source.suffix.lower())
+    with tempfile.NamedTemporaryFile(dir=FONT_DIR,delete=False) as f:temp=Path(f.name)
+    try:shutil.copy2(source,temp);os.replace(temp,target)
+    finally:temp.unlink(missing_ok=True)
+    return target
+
+def caption_font_status(account):
+    name,_=CAPTION_FONTS[str(account)]
+    try:
+        find_font(name,'АБВабвЁёABCabc012')
+        return '✓ '+Path(name).stem+' · найден'
+    except ExportError:return Path(name).stem+' · не найден'
 
 def ffmpeg_exe():
     bundled=Path(sys.executable).resolve().parent/'ffmpeg.exe'
@@ -225,8 +302,11 @@ def prepare_runtime():
 def stage_assets(plan,work,settings,progress=lambda _:None):
     public=work/'public';public.mkdir()
     progress('Remotion: проверяю шрифт и LUT')
-    font=find_font(plan.pop('fontName'))
+    expected=plan.pop('fontName')
+    font=find_font(expected,''.join(c['text'] for c in plan['captions']))
+    progress('Remotion: точный шрифт '+expected)
     font_name='caption'+font.suffix.lower();shutil.copy2(font,public/font_name);plan['font']=font_name
+    plan['fontFamily']='StudioCaptionExact'+plan['account']
     lut_digest='none'
     if any(v['lut'] for v in plan['videos']):
         shutil.copy2(find_lut(settings),work/'lut.cube')
@@ -299,5 +379,5 @@ def render_batch_background(projects,settings,progress=None):
     except Exception as exc:return {'rows':[],'error':str(exc),'remaining':list(map(str,projects))}
     def exporter(project,config):
         def start(p,folder):render_to_folder(p,folder,config,node,progress or (lambda _:None))
-        return export_one(project,config,start=start,engine='remotion')
+        return export_one(project,config,start=start,engine='remotion-font-v2')
     return export_batch(projects,settings,progress,exporter=exporter,close=lambda *a,**kw:None)

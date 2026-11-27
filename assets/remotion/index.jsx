@@ -12,26 +12,37 @@ const VideoLayer=({item,previousTransition})=>{
       style={{width:'100%',height:'100%',objectFit:'cover',filter:'blur('+blur+'px)',transform:'scale('+ (blur?1.035:1) +') scaleX('+(item.flip?-1:1)+')'}} />
   </AbsoluteFill>;
 };
-const Caption=({item})=>{
+const Caption=({item,fontFamily,fontStyle,fontWeight})=>{
   const f=useCurrentFrame();
   const enter=Math.max(1,item.enter),exit=Math.max(1,item.exit);
   const scale=item.enter?interpolate(f,[0,enter],[0.82,1],{extrapolateLeft:'clamp',extrapolateRight:'clamp'}):1;
   const opacity=item.exit?clip((item.frames-f)/exit):1;
   return <AbsoluteFill style={{display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
     <div style={{position:'relative',left:item.x,top:item.y,maxWidth:'82%',whiteSpace:'pre-wrap',overflowWrap:'break-word',
-      textAlign:'center',fontFamily:'StudioCaption',fontSize:item.fontSize,lineHeight:1.12,fontWeight:600,color:item.color,
+      textAlign:'center',fontFamily,fontStyle,fontWeight,fontSynthesis:'none',fontSize:item.fontSize,lineHeight:1.12,color:item.color,
       textShadow:'3px 3px 0 rgba(0,0,0,0.65)',opacity,transform:'scale('+scale+')'}}>{item.text}</div>
   </AbsoluteFill>;
 };
-const Movie=({videos,captions,audio,font})=>{
+const Movie=({videos,captions,audio,font,fontFamily='StudioCaptionExact',fontStyle='normal',fontWeight=600})=>{
   const [handle]=useState(()=>delayRender('Loading exact local caption font'));
   useEffect(()=>{
-    const face=new FontFace('StudioCaption','url("'+staticFile(font)+'")',{weight:'600'});
-    face.load().then(f=>{document.fonts.add(f);continueRender(handle);}).catch(e=>cancelRender(e));
-  },[font,handle]);
+    const face=new FontFace(fontFamily,'url("'+staticFile(font)+'")',{weight:String(fontWeight),style:fontStyle});
+    const load=async()=>{
+      await face.load();
+      document.fonts.add(face);
+      const descriptor=fontStyle+' '+fontWeight+' 69px "'+fontFamily+'"';
+      const loaded=await document.fonts.load(descriptor,'АБВабвЁёABCabc012');
+      await document.fonts.ready;
+      if(face.status!=='loaded'||!loaded.includes(face)||!document.fonts.check(descriptor,'АБВабвЁёABCabc012')){
+        throw Error('Exact caption font failed to load: '+fontFamily+' '+fontStyle+' '+fontWeight);
+      }
+      continueRender(handle);
+    };
+    load().catch(e=>cancelRender(e));
+  },[font,fontFamily,fontStyle,fontWeight,handle]);
   return <AbsoluteFill style={{backgroundColor:'#000'}}>
     {videos.map((v,i)=><Sequence key={i} from={v.start} durationInFrames={v.frames}><VideoLayer item={v} previousTransition={i?videos[i-1].transition:0}/></Sequence>)}
-    {captions.map((c,i)=><Sequence key={i} from={c.start} durationInFrames={c.frames}><Caption item={c}/></Sequence>)}
+    {captions.map((c,i)=><Sequence key={i} from={c.start} durationInFrames={c.frames}><Caption item={c} fontFamily={fontFamily} fontStyle={fontStyle} fontWeight={fontWeight}/></Sequence>)}
     <Sequence from={audio.start} durationInFrames={audio.frames}><Audio src={staticFile(audio.file)} trimBefore={audio.sourceFrame} volume={audio.volume}/></Sequence>
   </AbsoluteFill>;
 };
