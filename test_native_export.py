@@ -4,6 +4,9 @@ from unittest.mock import patch
 import native_export as n
 
 class NativeExportTests(unittest.TestCase):
+    def test_foreground_helper_is_safe_on_other_platforms(self):
+        with patch.object(n.sys,'platform','linux'):
+            self.assertFalse(n.activate_capcut_from_studio())
     def test_visual_fallback_only_before_export_actions(self):
         self.assertTrue(n.visual_fallback_allowed('start','STAGE: open exact project | missing'))
         self.assertTrue(n.visual_fallback_allowed('start','STAGE: find editor export button | missing'))

@@ -33,7 +33,7 @@ from studio_ui import MediaDialog, ProjectsDialog, ProfilesDialog, theme_style
 from desktop_ui import MediaPage, SongsPage, Ring, ProjectCount, icon, apply_appearance, panel
 from composition_preview import CompositionPreview
 from account_names import account_name,validate_account_name
-from native_export import export_batch,receipt as export_receipt,verify_mp4,file_digest,export_root
+from native_export import export_batch,receipt as export_receipt,verify_mp4,file_digest,export_root,activate_capcut_from_studio
 from export_names import manual_metadata
 from telegram_delivery import load_config as load_telegram,save_config as save_telegram,discover as discover_telegram,send_export,caption as telegram_caption,chat_ids,validate_token
 from subtitle_editor import _project_data, apply_changes
@@ -1104,6 +1104,13 @@ class MainWindow(QMainWindow):
         self.export_worker.update.connect(lambda msg:self.set_task(msg,None))
         self.export_worker.ready.connect(self.export_finished)
         self.set_task('Автоэкспорт CapCut · 1080p / 30 FPS',None)
+        # Set foreground from the interactive GUI, not only a hidden PowerShell process.
+        # Yield the screen for the visual exporter; restore it when the batch ends.
+        if sys.platform=='win32':
+            self._export_was_maximized=self.isMaximized()
+            self.note('На время автоэкспорта Studio сворачивается. Если CapCut не открылся, переключись на него через панель задач или Alt+Tab и оставь открытым.')
+            activate_capcut_from_studio()
+            self.showMinimized()
         self.export_worker.start()
 
     def retry_export(self):
@@ -1111,6 +1118,10 @@ class MainWindow(QMainWindow):
         self.begin_export(list(self.retry_export_paths))
 
     def export_finished(self,result):
+        if sys.platform=='win32' and self.isMinimized():
+            if getattr(self,'_export_was_maximized',False):self.showMaximized()
+            else:self.showNormal()
+            self.raise_();self.activateWindow()
         rows=result.get('rows',[])
         self.retry_export_paths=list(result.get('remaining',[]))
         self.retry_export_btn.setEnabled(bool(self.retry_export_paths))

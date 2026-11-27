@@ -7,6 +7,58 @@ from export_names import publish_export
 
 class ExportError(RuntimeError):pass
 
+def activate_capcut_from_studio():
+    """Best effort from the GUI thread while Studio owns the foreground.
+    Do not select an ambiguous window or send synthetic input to other apps.
+    """
+    if sys.platform!='win32':return False
+    try:
+        import ctypes as ct
+        from ctypes import wintypes as wt
+        u=ct.WinDLL('user32',use_last_error=True)
+        k=ct.WinDLL('kernel32',use_last_error=True)
+        callback=ct.WINFUNCTYPE(wt.BOOL,wt.HWND,wt.LPARAM)
+        u.EnumWindows.argtypes=[callback,wt.LPARAM];u.EnumWindows.restype=wt.BOOL
+        u.GetWindowThreadProcessId.argtypes=[wt.HWND,ct.POINTER(wt.DWORD)];u.GetWindowThreadProcessId.restype=wt.DWORD
+        u.IsWindowVisible.argtypes=[wt.HWND];u.IsWindowVisible.restype=wt.BOOL
+        u.IsIconic.argtypes=[wt.HWND];u.IsIconic.restype=wt.BOOL
+        u.GetClassNameW.argtypes=[wt.HWND,wt.LPWSTR,ct.c_int];u.GetClassNameW.restype=ct.c_int
+        u.GetWindowTextW.argtypes=[wt.HWND,wt.LPWSTR,ct.c_int];u.GetWindowTextW.restype=ct.c_int
+        u.ShowWindowAsync.argtypes=[wt.HWND,ct.c_int];u.ShowWindowAsync.restype=wt.BOOL
+        u.SetForegroundWindow.argtypes=[wt.HWND];u.SetForegroundWindow.restype=wt.BOOL
+        u.GetForegroundWindow.restype=wt.HWND
+        k.OpenProcess.argtypes=[wt.DWORD,wt.BOOL,wt.DWORD];k.OpenProcess.restype=wt.HANDLE
+        k.QueryFullProcessImageNameW.argtypes=[wt.HANDLE,wt.DWORD,wt.LPWSTR,ct.POINTER(wt.DWORD)];k.QueryFullProcessImageNameW.restype=wt.BOOL
+        k.CloseHandle.argtypes=[wt.HANDLE];k.CloseHandle.restype=wt.BOOL
+        candidates=[]
+        @callback
+        def visit(hwnd,_):
+            if not u.IsWindowVisible(hwnd):return True
+            title=ct.create_unicode_buffer(512);cls=ct.create_unicode_buffer(512)
+            u.GetWindowTextW(hwnd,title,len(title));u.GetClassNameW(hwnd,cls,len(cls))
+            name=title.value.strip().casefold();kind=cls.value.casefold()
+            if not (name=='capcut' or name.startswith('capcut - ') or name.endswith(' - capcut')):return True
+            if 'tooltip' in kind or 'splash' in kind or 'tray' in kind:return True
+            if not ('qwindowicon' in kind or 'homepagex' in kind or 'mainwindow' in kind):return True
+            pid=wt.DWORD();u.GetWindowThreadProcessId(hwnd,ct.byref(pid))
+            process=k.OpenProcess(0x1000,False,pid.value)
+            if not process:return True
+            try:
+                path=ct.create_unicode_buffer(32768);length=wt.DWORD(len(path))
+                if k.QueryFullProcessImageNameW(process,0,path,ct.byref(length)) and Path(path.value).name.casefold()=='capcut.exe':
+                    candidates.append(hwnd)
+            finally:k.CloseHandle(process)
+            return True
+        u.EnumWindows(visit,0)
+        foreground=u.GetForegroundWindow()
+        if foreground in candidates and not u.IsIconic(foreground):return True
+        if len(candidates)!=1:return False
+        hwnd=candidates[0]
+        if u.IsIconic(hwnd):u.ShowWindowAsync(hwnd,9)
+        return bool(u.SetForegroundWindow(hwnd))
+    except Exception:
+        return False
+
 def export_root(settings):
     return Path(settings.get('export_root') or APPDATA/'exports').expanduser().resolve()
 

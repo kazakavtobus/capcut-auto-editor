@@ -27,6 +27,7 @@ public static class VisualWin {
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n);
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h,int n);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);
@@ -122,7 +123,7 @@ function Bring-CapCut {
     $h=[VisualWin]::GetForegroundWindow()
     if(CapCut-Pid $h){
         $info=Window-Info $h
-        if($info -and $info.Kind -ne 'auxiliary' -and $info.Width -ge 250 -and $info.Height -ge 250){return}
+        if($info -and !$info.Minimized -and $info.Kind -ne 'auxiliary' -and $info.Width -ge 250 -and $info.Height -ge 250){return}
     }
     $all=@(Candidate-Windows)
     foreach($w in $all){
@@ -136,18 +137,32 @@ function Bring-CapCut {
     }
     if($known.Count -eq 1){
         $target=$known[0].Handle
-        if([VisualWin]::IsIconic($target)){$null=[VisualWin]::ShowWindow($target,9)}
-        $null=[VisualWin]::SetForegroundWindow($target)
+        # A minimized Qt window reports a tiny frame (e.g. 160x28). Restore
+        # asynchronously and wait for the actual window, before requesting focus.
+        if([VisualWin]::IsIconic($target)){
+            $restored=[VisualWin]::ShowWindowAsync($target,9)
+            [Console]::Error.WriteLine('RESTORE_REQUEST: '+$restored)
+            $restoreUntil=[DateTime]::UtcNow.AddSeconds(8)
+            do{
+                Start-Sleep -Milliseconds 300
+                $restoredInfo=Window-Info $target
+                if($restoredInfo -and !$restoredInfo.Minimized -and $restoredInfo.Width -ge 250 -and $restoredInfo.Height -ge 250){break}
+            }while([DateTime]::UtcNow -lt $restoreUntil)
+        }
+        $focused=[VisualWin]::SetForegroundWindow($target)
+        [Console]::Error.WriteLine('FOCUS_REQUEST: '+$focused)
+        $after=Window-Info $target
+        if($after){[Console]::Error.WriteLine(('AFTER_RESTORE: {0}x{1} | minimized={2}' -f $after.Width,$after.Height,$after.Minimized))}
         Start-Sleep -Milliseconds 500
     }
     # Windows may deny focus to a background process. Allow a manual Alt+Tab,
     # rather than clicking arbitrary windows or choosing an ambiguous project.
-    $until=[DateTime]::UtcNow.AddSeconds(15)
+    $until=[DateTime]::UtcNow.AddSeconds(30)
     do {
         $h=[VisualWin]::GetForegroundWindow()
         if(CapCut-Pid $h){
             $info=Window-Info $h
-            if($info -and $info.Kind -ne 'auxiliary' -and $info.Width -ge 250 -and $info.Height -ge 250){return}
+            if($info -and !$info.Minimized -and $info.Kind -ne 'auxiliary' -and $info.Width -ge 250 -and $info.Height -ge 250){return}
         }
         Start-Sleep -Milliseconds 500
     } while([DateTime]::UtcNow -lt $until)
