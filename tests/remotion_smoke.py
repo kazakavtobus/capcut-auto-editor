@@ -19,7 +19,7 @@ plan=dict(durationFrames=30,font='caption.ttf',
     audio=dict(file='audio.wav',start=0,frames=30,sourceFrame=0,volume=1))
 manifest=work/'manifest.json';manifest.write_text(json.dumps(plan,ensure_ascii=False),encoding='utf-8')
 output=work/'output.mp4'
-run('node',ROOT/'assets'/'remotion'/'render.cjs',manifest,public,output)
+run('node',ROOT/'assets'/'remotion'/'render.cjs',manifest,public,output,'cpu')
 info=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(output)]))
 v=next(x for x in info['streams'] if x['codec_type']=='video')
 a=next(x for x in info['streams'] if x['codec_type']=='audio')

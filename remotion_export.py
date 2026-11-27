@@ -155,7 +155,7 @@ def render_to_folder(project,folder,settings,node=None):
     with tempfile.TemporaryDirectory(prefix='remotion-',dir=folder) as tmp:
         work=Path(tmp);manifest,public=stage_assets(plan,work,settings)
         output=Path(folder)/'video.mp4'
-        run_command([node,RUNTIME/'render.cjs',manifest,public,output],RUNTIME,3600)
+        run_command([node,RUNTIME/'render.cjs',manifest,public,output,'auto',ffmpeg_exe()],RUNTIME,3600)
     if not output.is_file():raise ExportError('Remotion не создал MP4.')
 
 def render_batch_background(projects,settings,progress=None):
