@@ -6,7 +6,7 @@ from builder import build,media_info,detect_beats,cut_ends,load_original_zip,tem
 from caption_engine import obtain_captions
 from song_library import APPDATA, SongLibrary, song_hash, sync_previous_capcut_edits
 from auto_pipeline import to_srt,unique_project_name
-from studio_media import MediaLibrary,ffmpeg
+from studio_media import MediaLibrary,ffmpeg,MIN_FOOTAGE_US
 from account_names import account_name
 
 from studio_profiles import active_template as profile_template
@@ -34,7 +34,9 @@ def prepare_cycle_files(clips,folder,progress=None):
     paths=[]
     for i,row in enumerate(clips):
         p=Path(row['path'])
-        if media_info(p,'video')['duration']<4_950_000:
+        duration=media_info(p,'video')['duration']
+        if duration<MIN_FOOTAGE_US:raise ValueError('Футаж короче 3 секунд: '+p.name)
+        if duration<4_950_000:
             dest=Path(folder)/f'loop_{i}.mp4'
             if progress:progress('Подготовка короткого футажа: '+p.name)
             ffmpeg(['-stream_loop','-1','-i',p,'-t','5','-map','0:v:0','-an',
@@ -55,6 +57,7 @@ def render_batch(audio,settings,counts,progress=None,library=None):
     templates={a:profile_template(a) for a,n in counts.items() if n}
     duration=media_info(audio,'audio')['duration']
     if not 0<duration<=180_000_000:raise ValueError('Поддерживаются песни до 3 минут.')
+    lib.refresh_durations(say)
     sync_previous_capcut_edits(audio,folder,progress=say)
     rows=obtain_captions(audio,duration,settings.get('whisper_model','medium'),progress=say,
                          separate_vocals=settings.get('separate_vocals',False))

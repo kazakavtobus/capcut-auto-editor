@@ -159,26 +159,33 @@ class StudioTests(unittest.TestCase):
             self.assertEqual(len(list((lib.root/'trash').rglob('*.mp4'))),2)
 
 
-    def test_short_source_loop(self):
+    def test_minimum_footage_duration(self):
         from studio_media import ffmpeg
         from studio_pipeline import prepare_cycle_files,cycle_cuts
         from builder import media_info
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);lib=MediaLibrary(root/'lib')
-            for i in range(3):
-                p=root/f'short{i}.mp4'
-                ffmpeg(['-f','lavfi','-i',f'color=c={["red","blue","green"][i]}:size=120x160:rate=30:duration=1.2','-an','-c:v','libx264',p])
-                self.assertEqual(lib.import_video(p,'Город'),1)
-            rows=lib.choose(3,distinct_sources=True)
-            self.assertEqual(len({r['source'] for r in rows}),3)
-            self.assertTrue(all(0<r['duration_us']<5_000_000 for r in rows))
-            files=prepare_cycle_files(rows,root)
-            self.assertTrue(all(media_info(Path(p),'video')['duration']>=4_950_000 for p in files))
+            short=root/'short.mp4'
+            ffmpeg(['-f','lavfi','-i','color=c=red:size=120x160:rate=30:duration=1.2','-an','-c:v','libx264',short])
+            self.assertEqual(lib.import_video(short,'Город'),0)
+            # Old library rows remain intact, even if their recorded duration was wrong.
+            with lib.connect() as c:
+                c.execute('INSERT INTO sources VALUES(?,?,?,?)',('legacy','legacy',str(short),'Город'))
+                c.execute('INSERT INTO clips(id,source,idx,path,preview) VALUES(?,?,?,?,?)',('legacy','legacy',0,str(short),''))
+            lib.refresh_durations()
+            self.assertEqual(len(lib.clips()),1)
+            self.assertLess(lib.clips()[0]['duration_us'],3_000_000)
+            with self.assertRaises(LibraryShortage):lib.choose(1)
+            with self.assertRaises(ValueError):prepare_cycle_files(lib.clips(),root)
+            for i,duration in enumerate((3,6,8)):
+                p=root/f'valid{i}.mp4'
+                ffmpeg(['-f','lavfi','-i',f'testsrc2=size=120x160:rate=30:duration={duration}','-an','-c:v','libx264',p])
+                self.assertEqual(lib.import_video(p,'Город'),(1,1,2)[i])
+            rows=lib.choose(4,distinct_sources=True)
+            self.assertTrue(all(r['duration_us']>=3_000_000 for r in rows))
+            self.assertNotIn('legacy',[r['id'] for r in rows])
+            self.assertTrue(all(media_info(Path(p),'video')['duration']>=4_950_000 for p in prepare_cycle_files(rows,root)))
             self.assertEqual(len(cycle_cuts([5_000_000],1_000_000,[])),3)
-            lib.record('1','project',rows,'song')
-            again=lib.choose(3,distinct_sources=True)
-            self.assertEqual({r['id'] for r in again},{r['id'] for r in rows})
-            self.assertNotEqual([r['id'] for r in again],[r['id'] for r in rows])
     def test_account_labels(self):
         from account_names import account_name,validate_account_name
         self.assertEqual(account_name({},'1'),'Аккаунт 1')

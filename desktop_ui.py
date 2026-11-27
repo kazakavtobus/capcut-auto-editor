@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QApplication,QWidget,QFrame,QLabel,QPushButton,QV
     QListWidget,QListWidgetItem,QListView,QStyledItemDelegate,QStyle,QLineEdit,QComboBox,QFileDialog,
     QMessageBox,QInputDialog,QProgressBar,QMenu,QSizePolicy)
 from PySide6.QtCore import QUrl
-from studio_media import MediaLibrary,CATEGORIES
+from studio_media import MediaLibrary,CATEGORIES,MIN_FOOTAGE_US
 from studio_ui import theme_style,ImportWorker
 from song_library import SongLibrary,song_hash
 
@@ -221,7 +221,7 @@ class MediaPage(QWidget):
         controls.addWidget(label('Импорт как:','muted'));controls.addWidget(self.category,1);l.addLayout(controls)
         self.grid=AssetGrid();self.grid.setObjectName('assets');self.grid.setItemDelegate(AssetDelegate(self.grid))
         self.grid.setSelectionMode(QListWidget.SingleSelection);self.grid.itemDoubleClicked.connect(lambda _:self.preview());l.addWidget(self.grid,1)
-        self.empty=label('Медиатека пуста. Добавь свои исходники, чтобы создать ЧБ-фрагменты до пяти секунд.','muted');self.empty.setWordWrap(True);l.addWidget(self.empty)
+        self.empty=label('Медиатека пуста. Добавь свои исходники, чтобы создать ЧБ-фрагменты от трёх до пяти секунд.','muted');self.empty.setWordWrap(True);l.addWidget(self.empty)
         actions=QHBoxLayout()
         for title,fn in [('Просмотр',self.preview),('Переименовать исходник',self.rename),('Вкл. / исключить',self.toggle),('Удалить…',self.delete)]:
             actions.addWidget(button(title,fn))
@@ -232,7 +232,9 @@ class MediaPage(QWidget):
     def refresh(self,*args):
         allrows=self.lib.clips();q=self.search.text().casefold().strip();category=self.filter.currentText()
         self.rows=[r for r in allrows if (category=='Все категории' or r['category']==category) and q in r['name'].casefold()]
-        self.summary.setText(f'{len(allrows)} фрагментов · {sum(r["enabled"] for r in allrows)} активных · {len(set(r["source"] for r in allrows))} исходников')
+        usable=sum(bool(r["enabled"]) and r["duration_us"]>=MIN_FOOTAGE_US for r in allrows)
+        short=sum(r["duration_us"]<MIN_FOOTAGE_US for r in allrows)
+        self.summary.setText(f'{len(allrows)} фрагментов · {usable} доступно для монтажа · {short} короче 3 сек. · {len(set(r["source"] for r in allrows))} исходников')
         self.grid.clear()
         for r in self.rows:
             item=QListWidgetItem();item.setData(Qt.UserRole,r);item.setToolTip(f"{r['name']} · Фрагмент {r['idx']+1}");self.grid.addItem(item)

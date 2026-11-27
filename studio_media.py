@@ -16,6 +16,7 @@ from pathlib import Path
 from song_library import APPDATA, song_hash
 
 LENGTH=5_000_000
+MIN_FOOTAGE_US=3_000_000
 RECENT=4
 MAX_RECENT=25
 CATEGORIES=('Город','Природа','Машины')
@@ -132,9 +133,10 @@ class MediaLibrary:
             if c.execute('SELECT 1 FROM sources WHERE id=?',(digest,)).fetchone():return 0
         duration=media_info(source,'video')['duration']
         if duration<=0:raise ValueError('Не удалось определить длительность видео.')
-        count=max(1,math.ceil(duration/LENGTH))
-        # Keep short originals; ignore only sub-frame remnants of long files.
-        if count>1 and duration-(count-1)*LENGTH<100_000:count-=1
+        count=duration//LENGTH+int(duration%LENGTH>=MIN_FOOTAGE_US)
+        if not count:
+            say(f'{source.name}: пропущено, видео короче 3 секунд')
+            return 0
         original=self.root/'originals'/(digest+source.suffix.lower())
         rows=[]
         with tempfile.TemporaryDirectory(dir=self.root) as tmp:
@@ -149,11 +151,14 @@ class MediaLibrary:
                     '-vf','scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1,fps=30,hue=s=0,format=yuv420p',
                     '-c:v','libx264','-crf','19','-preset','veryfast','-movflags','+faststart',clip])
                 actual=media_info(clip,'video')['duration']
-                if actual<=0:raise RuntimeError('Пустой фрагмент.')
+                if actual<MIN_FOOTAGE_US:
+                    say(f'{source.name}: пропущен фрагмент короче 3 секунд')
+                    continue
                 ffmpeg(['-ss',str(min(1,actual/2_000_000)),'-i',clip,'-frames:v','1','-vf','scale=180:-1',preview])
                 if not preview.is_file():ffmpeg(['-i',clip,'-frames:v','1','-vf','scale=180:-1',preview])
                 if not preview.is_file():raise RuntimeError('Не удалось получить кадр видео.')
                 rows.append((key,digest,i,str(self.root/'clips'/clip.name),str(self.root/'previews'/preview.name),actual))
+            if not rows:return 0
             with self.connect() as c:
                 c.execute('BEGIN IMMEDIATE')
                 if c.execute('SELECT 1 FROM sources WHERE id=?',(digest,)).fetchone():return 0
@@ -163,12 +168,24 @@ class MediaLibrary:
                 c.execute('INSERT INTO sources VALUES(?,?,?,?)',(digest,source.name,str(original.relative_to(self.root)),category))
                 c.executemany('INSERT INTO clips(id,source,idx,path,preview,duration_us) VALUES(?,?,?,?,?,?)',[(key,d,i,str(Path(p).relative_to(self.root)),str(Path(v).relative_to(self.root)),length) for key,d,i,p,v,length in rows])
         return len(rows)
+    def refresh_durations(self,progress=None):
+        """Recheck real video durations once per batch, including legacy database rows."""
+        from builder import media_info
+        updates=[]
+        if progress:progress('Проверка длительности футажей медиатеки…')
+        for row in self.clips():
+            if not row['enabled']:continue
+            try:actual=int(media_info(Path(row['path']),'video')['duration'])
+            except Exception:actual=0
+            if actual!=row['duration_us']:updates.append((max(0,actual),row['id']))
+        if updates:
+            with self.connect() as c:c.executemany('UPDATE clips SET duration_us=? WHERE id=?',updates)
     def choose(self,count,distinct_sources=False,song=None):
         """Prefer fresh and rare footage, but never block solely on usage history."""
         if count<=0:raise ValueError('Нет монтажных интервалов.')
-        pool=[r for r in self.clips() if r['enabled'] and Path(r['path']).is_file()]
+        pool=[r for r in self.clips() if r['enabled'] and r['duration_us']>=MIN_FOOTAGE_US and Path(r['path']).is_file()]
         if len(pool)<count:
-            raise LibraryShortage(f'Нужно минимум {count} разных активных фрагментов, доступно {len(pool)}.')
+            raise LibraryShortage(f'Нужно минимум {count} разных активных фрагментов от 3 секунд, доступно {len(pool)}.')
         # Dynamic shared history, with soft fallback for small libraries.
         recent_limit=min(MAX_RECENT,max(RECENT,(len(pool)-count)//count))
         with self.connect() as c:
