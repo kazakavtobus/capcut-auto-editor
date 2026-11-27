@@ -47,6 +47,7 @@ def verify_mp4(path,duration):
 
 def visual_fallback_allowed(mode,stderr):
     # Never retry automatically after an export may already have started.
+    if mode=='close':return any(line.startswith('STAGE: close exact project |') for line in stderr.splitlines())
     return mode=='start' and any(line.startswith((
         'STAGE: open exact project |','STAGE: find editor export button |'
     )) for line in stderr.splitlines())
@@ -79,7 +80,7 @@ def native_command(project,folder='',mode='start'):
         visual=script.with_name('capcut_visual_export.ps1')
         if visual.is_file() and visual_fallback_allowed(mode,native_stderr):
             try:
-                proc=_run_export_script(visual,data,180)
+                proc=_run_export_script(visual,data,240)
                 if proc.returncode==0 and expected in proc.stdout:return
                 visual_stderr=proc.stderr
             except (OSError,subprocess.TimeoutExpired) as exc:

@@ -123,11 +123,12 @@ function Open-ExactProject {
 try {
     if($req.mode -eq 'close'){
         $w=@(Project-Windows)
+        if($w.Count -ne 1){$stage='close exact project';throw 'Exact project window unavailable.'}
         if($w.Count -eq 1){
             # Close only the successfully exported project through its normal window pattern.
             # No forced process termination and no dismissal of save prompts.
             $p=$null
-            if($w[0].TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$p)){$p.Close()}
+            if($w[0].TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$p)){$p.Close()}else{$stage='close exact project';throw 'Exact project has no close pattern.'}
         }
         Write-Output 'CLOSE_ATTEMPTED';exit 0
     }

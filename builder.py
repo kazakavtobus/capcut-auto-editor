@@ -189,8 +189,8 @@ def build(audio_file: str, video_files: list[str], projects_folder: str, project
     audio=Path(audio_file).expanduser().resolve()
     videos=[Path(p).expanduser().resolve() for p in video_files]
     local_mode = local_boundaries is not None
-    if local_cycle and (not local_mode or len(videos)!=3 or len(set(videos))!=3):
-        raise ValueError('Для циклического монтажа нужны три разных футажа.')
+    if local_cycle and (not local_mode or len(videos)<3 or len(videos)>7 or len(set(videos))!=len(videos)):
+        raise ValueError('Для циклического монтажа нужны от трёх до семи разных футажей.')
     if not videos or (not local_mode and len(videos)!=3):
         raise ValueError('Некорректное количество видео.')
     if not project_name.strip() or any(c in project_name for c in r'<>:"/\\|?*'):
@@ -228,7 +228,7 @@ def build(audio_file: str, video_files: list[str], projects_folder: str, project
     status('Поиск ритма...' if snap_to_beat else 'Подготовка видеонарезки...')
     beat_points=(beats_override if beats_override is not None else detect_beats(audio)) if snap_to_beat else []
     boundaries=list(local_boundaries) if local_mode else cut_ends(reference, audinfo['duration'], beat_points)
-    if local_mode and ((len(boundaries)<3 if local_cycle else len(boundaries)!=len(videos)) or not boundaries or boundaries[-1]!=audinfo['duration'] or any(y<=x for x,y in zip([0]+boundaries,boundaries))):
+    if local_mode and ((len(boundaries)<len(videos) if local_cycle else len(boundaries)!=len(videos)) or not boundaries or boundaries[-1]!=audinfo['duration'] or any(y<=x for x,y in zip([0]+boundaries,boundaries))):
         raise ValueError('Неверная локальная монтажная последовательность.')
     mat=data['materials']
     expanded=[]; tstart=0; cycle_materials={}

@@ -21,10 +21,10 @@ def bounded_cuts(reference,total,beats):
         if end>prev:result.append(end);prev=end
     return result
 
-def cycle_cuts(reference,total,beats):
+def cycle_cuts(reference,total,beats,minimum=3):
     result=bounded_cuts(reference,total,beats)
-    if total<180_000:raise ValueError('Слишком короткая песня для трёх фрагментов.')
-    while len(result)<3:
+    if minimum<3 or total<minimum*60_000:raise ValueError('Слишком короткая песня для выбранного числа фрагментов.')
+    while len(result)<minimum:
         left,right=max(zip([0]+result,result),key=lambda x:x[1]-x[0])
         result.append((left+right)//2);result.sort()
     return result
@@ -63,11 +63,13 @@ def render_batch(audio,settings,counts,progress=None,library=None):
     record=SongLibrary().load(audio)
     title=Path(record.get('filename',audio.name)).stem if record else audio.stem
     beats=detect_beats(audio)
+    footage_count=5
+    track_hash=song_hash(audio)
     plans={}
     for account,template in templates.items():
         data=load_original_zip(template)[0]
         reference=[s['target_timerange']['start']+s['target_timerange']['duration'] for s in data['tracks'][0]['segments']]
-        plans[account]=cycle_cuts(reference,duration,beats)
+        plans[account]=cycle_cuts(reference,duration,beats,footage_count)
     projects=[];last_info={}
     with tempfile.TemporaryDirectory() as tmp:
         srt=Path(tmp)/'lyrics.srt';to_srt(rows,srt)
@@ -76,19 +78,19 @@ def render_batch(audio,settings,counts,progress=None,library=None):
                 label=account_name(settings,account)
                 say(f'Проект {len(projects)+1}/{total} · {label}')
                 bounds=plans[account]
-                try:clips=lib.choose(3,distinct_sources=True)
+                try:clips=lib.choose(footage_count,distinct_sources=True,song=track_hash)
                 except ValueError as exc:raise ValueError(f'Уже создано {len(projects)} из {total} проектов. '+str(exc)) from exc
                 name=unique_project_name(folder,Path(f'{label} — {title}.mp3'.replace('/', ' ').replace('\\',' ')))
                 reused=sum(bool(r.get('recent_reuse')) for r in clips)
-                say(f'Подбор: {3-reused} свежих, {reused} недавних футажей')
+                say(f'Подбор: {footage_count-reused} свежих, {reused} недавних футажей')
                 paths=prepare_cycle_files(clips,tmp,say)
                 project,info=build(str(audio),paths,str(folder),name,
                     srt_file=str(srt),beats_override=beats,embed_assets=True,
                     local_boundaries=bounds,template_path=templates[account],progress=say,local_cycle=True)
                 assets=project/'AutoAssets'
                 to_srt(rows,assets/'lyrics.srt')
-                (assets/'sources.json').write_text(json.dumps({'provider':'local','account':account,'account_name':label,'clips':[r['id'] for r in clips],'sequence':[clips[i%3]['id'] for i in range(len(bounds))]},ensure_ascii=False),encoding='utf-8')
-                lib.record(account,project,clips,song_hash(audio))
+                (assets/'sources.json').write_text(json.dumps({'provider':'local','account':account,'account_name':label,'clips':[r['id'] for r in clips],'sequence':[clips[i%len(clips)]['id'] for i in range(len(bounds))]},ensure_ascii=False),encoding='utf-8')
+                lib.record(account,project,clips,track_hash)
                 projects.append(str(project));last_info=info
                 say(f'Готово проектов: {len(projects)}/{total}')
     return Path(projects[-1]),dict(last_info,projects=projects,total=len(projects))

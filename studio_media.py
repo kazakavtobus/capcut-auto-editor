@@ -17,6 +17,7 @@ from song_library import APPDATA, song_hash
 
 LENGTH=5_000_000
 RECENT=4
+MAX_RECENT=25
 CATEGORIES=('Город','Природа','Машины')
 class LibraryShortage(ValueError): pass
 
@@ -162,14 +163,17 @@ class MediaLibrary:
                 c.execute('INSERT INTO sources VALUES(?,?,?,?)',(digest,source.name,str(original.relative_to(self.root)),category))
                 c.executemany('INSERT INTO clips(id,source,idx,path,preview,duration_us) VALUES(?,?,?,?,?,?)',[(key,d,i,str(Path(p).relative_to(self.root)),str(Path(v).relative_to(self.root)),length) for key,d,i,p,v,length in rows])
         return len(rows)
-    def choose(self,count,distinct_sources=False):
+    def choose(self,count,distinct_sources=False,song=None):
         """Prefer fresh and rare footage, but never block solely on usage history."""
         if count<=0:raise ValueError('Нет монтажных интервалов.')
         pool=[r for r in self.clips() if r['enabled'] and Path(r['path']).is_file()]
         if len(pool)<count:
             raise LibraryShortage(f'Нужно минимум {count} разных активных фрагментов, доступно {len(pool)}.')
+        # Dynamic shared history, with soft fallback for small libraries.
+        recent_limit=min(MAX_RECENT,max(RECENT,(len(pool)-count)//count))
         with self.connect() as c:
-            ids=[r[0] for r in c.execute('SELECT id FROM renders ORDER BY id DESC LIMIT ?',(RECENT,))]
+            ids=[r[0] for r in c.execute('SELECT id FROM renders ORDER BY id DESC LIMIT ?',(recent_limit,))]
+            song_uses={r[0]:r[1] for r in c.execute('SELECT used.clip_id,count(*) FROM used JOIN renders ON renders.id=used.render_id WHERE renders.song=? GROUP BY used.clip_id',(song,))} if song else {}
             recent={}
             for i,rid in enumerate(ids):
                 for row in c.execute('SELECT clip_id FROM used WHERE render_id=?',(rid,)):
@@ -180,9 +184,7 @@ class MediaLibrary:
         rng=random.SystemRandom()
         selected=[];sources=set()
         for _ in range(count):
-            candidates=[r for r in pool if r['source'] not in sources] if distinct_sources else pool
-            if not candidates:candidates=pool
-            best=min(candidates,key=lambda r:(recent.get(r['id'],0),r['uses'],r['last_use'] or 0,rng.random()))
+            best=min(pool,key=lambda r:(recent.get(r['id'],0),song_uses.get(r['id'],0),int(distinct_sources and r['source'] in sources),r['uses'],r['last_use'] or 0,rng.random()))
             selected.append(best);sources.add(best['source']);pool.remove(best)
         def score(order):
             ids=[r['id'] for r in order]

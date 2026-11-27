@@ -19,6 +19,26 @@ class StudioTests(unittest.TestCase):
                 l.record(str(i%2+1),str(i),rows,'song');used.append(ids)
             self.assertEqual(len(l.projects()),5)
             self.assertFalse(set(r['id'] for r in l.choose(4)).intersection(set().union(*used[-4:])))
+    def test_five_clips_large_library_rotates_across_accounts(self):
+        from studio_pipeline import cycle_cuts
+        with tempfile.TemporaryDirectory() as tmp:
+            lib=MediaLibrary(tmp)
+            with lib.connect() as c:
+                for i in range(167):
+                    k=str(i);p=Path(tmp)/(k+'.mp4');p.write_bytes(b'fixture')
+                    c.execute('INSERT INTO sources VALUES(?,?,?,?)',(k,k,str(p),'Город'))
+                    c.execute('INSERT INTO clips(id,source,idx,path,preview) VALUES(?,?,?,?,?)',(k,k,0,str(p),''))
+            history=[]
+            for i in range(28):
+                rows=lib.choose(5,distinct_sources=True,song='song')
+                ids={r['id'] for r in rows}
+                self.assertEqual(len(ids),5)
+                self.assertFalse(ids.intersection(set().union(*history[-25:])))
+                lib.record(str(i%2+1),str(i),rows,'song')
+                history.append(ids)
+            cuts=cycle_cuts([5_000_000],22_000_000,[],5)
+            self.assertGreaterEqual(len(cuts),5)
+            self.assertEqual(cuts[-1],22_000_000)
     def test_shortage(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(LibraryShortage):MediaLibrary(tmp).choose(1)
@@ -89,6 +109,16 @@ class StudioTests(unittest.TestCase):
             ids=[s['material_id'] for s in cycle['tracks'][0]['segments']]
             self.assertEqual(len(set(ids)),3);self.assertEqual(ids[:3],ids[3:])
             self.assertEqual(len(list((cyc/'AutoAssets').glob('video_*.mp4'))),3)
+            five=[]
+            for i in range(5):
+                f=root/f'five_{i}.mp4';shutil.copy2(clips[0]['path'],f);five.append(str(f))
+            five_project,_=build(str(audio),five,str(out),'five',
+                srt_file=str(srt),beats_override=[],local_boundaries=boundaries,template_path=template,local_cycle=True)
+            five_draft=json.loads((five_project/'draft_content.json').read_text(encoding='utf-8'))
+            five_ids=[s['material_id'] for s in five_draft['tracks'][0]['segments']]
+            self.assertEqual(len(set(five_ids)),5)
+            self.assertEqual(five_ids[0],five_ids[5])
+            self.assertEqual(len(list((five_project/'AutoAssets').glob('video_*.mp4'))),5)
             from studio_profiles import install_template,active_template,versions,create_reference
             profile_dir=root/'profiles'
             install_template('1',project,profile_dir)

@@ -10,6 +10,7 @@ class NativeExportTests(unittest.TestCase):
         self.assertFalse(n.visual_fallback_allowed('start','STAGE: confirm native export | error'))
         self.assertFalse(n.visual_fallback_allowed('start','STAGE: output folder | error'))
         self.assertFalse(n.visual_fallback_allowed('close','STAGE: open exact project | missing'))
+        self.assertTrue(n.visual_fallback_allowed('close','STAGE: close exact project | missing'))
     def test_partial_batch_keeps_completed(self):
         def export(p,s):
             if p=='b':raise n.ExportError('UIA unavailable')

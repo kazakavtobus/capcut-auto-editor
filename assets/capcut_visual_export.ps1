@@ -30,6 +30,12 @@ public static class VisualWin {
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h,int attribute,out RECT rect,int size);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint message,IntPtr w,IntPtr l);
+    public static bool FrameRect(IntPtr h,out RECT r) {
+        if(DwmGetWindowAttribute(h,9,out r,Marshal.SizeOf(typeof(RECT)))==0 && r.Right>r.Left && r.Bottom>r.Top)return true;
+        return GetWindowRect(h,out r);
+    }
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h,StringBuilder s,int n);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr c);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
@@ -79,7 +85,7 @@ function Active-CapCut {
 }
 function Window-Info([IntPtr]$h) {
     $r=New-Object VisualWin+RECT
-    if(![VisualWin]::GetWindowRect($h,[ref]$r)){return}
+    if(![VisualWin]::FrameRect($h,[ref]$r)){return}
     $native=[VisualWin]::Class($h)
     $uia='';$id=''
     try {
@@ -150,7 +156,7 @@ function Bring-CapCut {
 function Read-Frame {
     $h=Active-CapCut
     $r=New-Object VisualWin+RECT
-    if(![VisualWin]::GetWindowRect($h,[ref]$r)){throw 'Cannot locate CapCut window.'}
+    if(![VisualWin]::FrameRect($h,[ref]$r)){throw 'Cannot locate CapCut window.'}
     $w=$r.Right-$r.Left;$height=$r.Bottom-$r.Top
     if($w -lt 250 -or $height -lt 250){throw 'CapCut window is too small.'}
     $bounds=[Windows.Forms.SystemInformation]::VirtualScreen
@@ -219,7 +225,7 @@ function Click($frame,[double]$x,[double]$y) {
     $h=Active-CapCut
     if($h -ne $frame.Handle){throw 'CapCut window changed before click.'}
     $rect=New-Object VisualWin+RECT
-    if(![VisualWin]::GetWindowRect($h,[ref]$rect) -or $rect.Left -ne $frame.Left -or $rect.Top -ne $frame.Top -or ($rect.Right-$rect.Left) -ne $frame.Width -or ($rect.Bottom-$rect.Top) -ne $frame.Height){throw 'CapCut moved before click.'}
+    if(![VisualWin]::FrameRect($h,[ref]$rect) -or $rect.Left -ne $frame.Left -or $rect.Top -ne $frame.Top -or ($rect.Right-$rect.Left) -ne $frame.Width -or ($rect.Bottom-$rect.Top) -ne $frame.Height){throw 'CapCut moved before click.'}
     if($x -lt 0 -or $y -lt 0 -or $x -ge $frame.Width -or $y -ge $frame.Height){throw 'Click would leave CapCut window.'}
     $sx=[int]($frame.Left+$x);$sy=[int]($frame.Top+$y)
     if([VisualWin]::PointPid($sx,$sy) -ne [VisualWin]::Pid($h)){throw 'Another window covers the CapCut control.'}
@@ -241,6 +247,15 @@ function Require-Dialog($frame) {
     $null=One (Matches $frame @('Разрешение','Resolution')) 'resolution label'
     $null=One (Matches $frame @('Частота кадров','Frame rate')) 'frame rate label'
 }
+function Project-RowMatches([string]$visible,[string]$expected) {
+    $v=Norm $visible;$e=Norm $expected
+    if($v -eq $e){return $true}
+    # List elides the middle of long names; never select on a prefix alone.
+    if($v -match '^(.{6,}?)\.{2,}(.{4,})$'){
+        return ($e.StartsWith($Matches[1]) -and $e.EndsWith($Matches[2]) -and $e.Length -ge ($Matches[1].Length+$Matches[2].Length))
+    }
+    return $false
+}
 function Open-Dialog {
     Bring-CapCut
     $frame=Read-Frame
@@ -252,7 +267,7 @@ function Open-Dialog {
         $heading=One (Matches $frame @('Проекты','Projects')) $stageLocal
         $items=@(foreach($line in $frame.Lines){
             $words=@($line.Words | Where-Object {$_.Y -gt $heading.Bottom -and $_.Right -lt ($frame.Width*0.66)})
-            if($words.Count -and (Norm ($words.Text -join ' ')) -eq (Norm ([string]$req.project))){Box $words}
+            if($words.Count -and (Project-RowMatches ($words.Text -join ' ') ([string]$req.project))){Box $words}
         })
         $item=One $items 'exact visible project row'
         Click-Box $frame $item
@@ -268,7 +283,14 @@ function Open-Dialog {
     }
     $info=Window-Info $frame.Handle
     if($info.Kind -notin @('editor','unknown')){throw 'Expected CapCut editor or export dialog.'}
-    $btn=One (Matches $frame @('Экспорт','Export') ($frame.Width*0.65) 0 $frame.Width ($frame.Height*0.12)) 'editor export button'
+    $deadline=[DateTime]::UtcNow.AddSeconds(50)
+    do {
+        $buttons=@(Matches $frame @('Экспорт','Export') ($frame.Width*0.65) 0 $frame.Width ($frame.Height*0.12))
+        if($buttons.Count -eq 1){break}
+        Start-Sleep -Milliseconds 800
+        $frame=Read-Frame
+    }while([DateTime]::UtcNow -lt $deadline)
+    $btn=One $buttons 'editor export button'
     Click-Box $frame $btn
     $deadline=[DateTime]::UtcNow.AddSeconds(15)
     do {
@@ -336,7 +358,92 @@ function Set-TextField($frame,$label,[double]$fieldX,[string]$value,[bool]$path=
         else{[Windows.Forms.Clipboard]::Clear()}
     }
 }
+function Folder-Dialog([IntPtr]$h) {
+    try {
+        $e=[System.Windows.Automation.AutomationElement]::FromHandle($h)
+        if($e.Current.Name -in @('Выберите путь для экспорта','Select export path','Select Folder','Choose export path')){return $e}
+    }catch{}
+    return $null
+}
+function Select-ExportFolder($frame,$folder,$column,[string]$path) {
+    if(!(Test-Path -LiteralPath $path -PathType Container)){throw 'Export folder does not exist.'}
+    # Observed in recording: native Windows folder chooser, not writable QML field.
+    $res=One (Matches $frame @('Разрешение','Resolution')) 'resolution label'
+    $gap=$column.X-$res.X
+    if($gap -lt 30){throw 'Cannot locate folder button safely.'}
+    Click $frame ($column.X+2.1*$gap) (($folder.Y+$folder.Bottom)/2)
+    $until=[DateTime]::UtcNow.AddSeconds(12)
+    do {
+        Start-Sleep -Milliseconds 300
+        $h=Active-CapCut
+        $dialog=Folder-Dialog $h
+        if($dialog){break}
+    }while([DateTime]::UtcNow -lt $until)
+    if(!$dialog){throw 'Folder picker was not recognized. No export started.'}
+    $original=[Windows.Forms.Clipboard]::GetDataObject()
+    try {
+        [Windows.Forms.SendKeys]::SendWait('%d')
+        Start-Sleep -Milliseconds 250
+        if((Active-CapCut) -ne $h -or !(Folder-Dialog $h)){throw 'Folder picker focus changed.'}
+        [Windows.Forms.Clipboard]::SetText($path)
+        [Windows.Forms.SendKeys]::SendWait('^a')
+        [Windows.Forms.SendKeys]::SendWait('^v')
+        [Windows.Forms.SendKeys]::SendWait('{ENTER}')
+        Start-Sleep -Milliseconds 800
+        if((Active-CapCut) -ne $h -or !(Folder-Dialog $h)){throw 'Cannot verify navigation in folder picker.'}
+        [Windows.Forms.SendKeys]::SendWait('%d')
+        Start-Sleep -Milliseconds 250
+        [Windows.Forms.Clipboard]::SetText('studio-folder-'+[guid]::NewGuid().ToString())
+        [Windows.Forms.SendKeys]::SendWait('^a')
+        [Windows.Forms.SendKeys]::SendWait('^c')
+        Start-Sleep -Milliseconds 250
+        $actual=[Windows.Forms.Clipboard]::GetText()
+        if($actual.Replace('/','\').TrimEnd('\') -ne $path.Replace('/','\').TrimEnd('\')){throw 'Folder picker did not navigate to the exact output path.'}
+        $dialog=Folder-Dialog $h
+        if((Active-CapCut) -ne $h -or !$dialog){throw 'Folder picker focus changed.'}
+        $buttons=@($dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition) | Where-Object {
+            try {$_.Current.ControlType.ProgrammaticName -eq 'ControlType.Button' -and $_.Current.Name -in @('Выбор папки','Выбрать папку','Select Folder') -and $_.Current.IsEnabled -and !$_.Current.IsOffscreen}catch{$false}
+        })
+        $button=One $buttons 'native Select Folder button'
+        $pattern=$null
+        if(!$button.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){throw 'Folder confirmation is inaccessible.'}
+        $pattern.Invoke()
+        Start-Sleep -Milliseconds 700
+        if(Folder-Dialog ([VisualWin]::GetForegroundWindow())){throw 'Folder picker did not close.'}
+    }finally{
+        if($null -ne $original){[Windows.Forms.Clipboard]::SetDataObject($original,$true)}else{[Windows.Forms.Clipboard]::Clear()}
+    }
+}
+function Close-CompletedProject {
+    Bring-CapCut
+    $until=[DateTime]::UtcNow.AddSeconds(35)
+    do {
+        $frame=Read-Frame
+        $done=@(Matches $frame @('Видео сохранено на ваш компьютер','Video saved to your computer'))
+        $titles=@(Dialog-Title $frame)
+        $close=@(Matches $frame @('Закрыть','Close') ($frame.Width*0.45) ($frame.Height*0.5))
+        if($done.Count -eq 1 -and $titles.Count -eq 1 -and $close.Count -eq 1){break}
+        Start-Sleep -Milliseconds 700
+    }while([DateTime]::UtcNow -lt $until)
+    if($done.Count -ne 1 -or $titles.Count -ne 1 -or $close.Count -ne 1){throw 'Cannot verify completed export dialog. Close it manually, then return to CapCut home.'}
+    $ownerPid=[VisualWin]::Pid($frame.Handle)
+    Click-Box $frame $close[0]
+    Start-Sleep -Milliseconds 600
+    $active=Active-CapCut
+    $info=Window-Info $active
+    if($info.Kind -ne 'editor' -or [VisualWin]::Pid($active) -ne $ownerPid){throw 'Cannot safely identify editor after closing result dialog.'}
+    $null=[VisualWin]::PostMessage($active,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)
+    $until=[DateTime]::UtcNow.AddSeconds(20)
+    do{
+        Start-Sleep -Milliseconds 500
+        $h=[VisualWin]::GetForegroundWindow()
+        if((CapCut-Pid $h) -and (Window-Info $h).Kind -eq 'home'){Write-Output 'CLOSE_ATTEMPTED';return}
+    }while([DateTime]::UtcNow -lt $until)
+    throw 'Editor did not return to the project list. Check for a save prompt.'
+}
+
 try {
+    if($req.mode -eq 'close'){$stage='visual close completed project';Close-CompletedProject;exit 0}
     $stage='visual open exact project'
     $frame=Open-Dialog
     Require-Dialog $frame
@@ -353,8 +460,8 @@ try {
     $frame=Read-Frame;Require-Dialog $frame
     $stage='visual output folder'
     $column=One (Row-Value $frame @('Разрешение','Resolution') @('1080P','1080 P')) 'settings value column'
-    $folder=One (Matches $frame @('Экспортировать в','Экспортировать...','Экспортирова...','Экспортирова…','Export to','Save to') 0 $name.Bottom $column.X $column.Y) 'output folder label'
-    Set-TextField $frame $folder ($column.X+12) ([string]$req.folder) $true
+    $folder=One (Matches $frame @('Экспортировать в','Экспортировать...','Экспортирова...','Экспортирова…','Экспортирова','Export to','Save to') 0 $name.Bottom $column.X $column.Y) 'output folder label'
+    Select-ExportFolder $frame $folder $column ([string]$req.folder)
     $frame=Read-Frame;Require-Dialog $frame
     $stage='visual final verification'
     $null=One (Row-Value $frame @('Разрешение','Resolution') @('1080P','1080 P')) '1080p'
