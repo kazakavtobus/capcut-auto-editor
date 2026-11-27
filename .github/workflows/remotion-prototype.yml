@@ -36,6 +36,8 @@ jobs:
         run: |
           choco install ffmpeg --yes --no-progress
           if ($LASTEXITCODE -ne 0) { throw 'FFmpeg installation failed' }
+      - name: Install raster font dependency
+        run: python -m pip install Pillow
       - name: Python compilation
         run: python -m py_compile remotion_export.py native_export.py app.py auto_pipeline.py
       - name: Render synthetic reference

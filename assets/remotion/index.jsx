@@ -1,5 +1,5 @@
 import React,{useEffect,useState} from 'react';
-import {AbsoluteFill,Audio,Composition,OffthreadVideo,Sequence,registerRoot,staticFile,useCurrentFrame,useVideoConfig,interpolate,delayRender,continueRender,cancelRender} from 'remotion';
+import {AbsoluteFill,Audio,Img,Composition,OffthreadVideo,Sequence,registerRoot,staticFile,useCurrentFrame,useVideoConfig,interpolate,delayRender,continueRender,cancelRender} from 'remotion';
 
 const clip=(x)=>Math.max(0,Math.min(1,x));
 const VideoLayer=({item,previousTransition})=>{
@@ -18,9 +18,9 @@ const Caption=({item,fontFamily,fontStyle,fontWeight})=>{
   const scale=item.enter?interpolate(f,[0,enter],[0.82,1],{extrapolateLeft:'clamp',extrapolateRight:'clamp'}):1;
   const opacity=item.exit?clip((item.frames-f)/exit):1;
   return <AbsoluteFill style={{display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
-    <div style={{position:'relative',left:item.x,top:item.y,maxWidth:'82%',whiteSpace:'pre-wrap',overflowWrap:'break-word',
+    {item.image?<Img src={staticFile(item.image)} style={{position:'relative',left:item.x,top:item.y,width:item.imageWidth,height:item.imageHeight,opacity,transform:'scale('+scale+')'}}/>:<div style={{position:'relative',left:item.x,top:item.y,maxWidth:'82%',whiteSpace:'pre-wrap',overflowWrap:'break-word',
       textAlign:'center',fontFamily,fontStyle,fontWeight,fontSynthesis:'none',fontSize:item.fontSize,lineHeight:1.12,color:item.color,
-      textShadow:'3px 3px 0 rgba(0,0,0,0.65)',opacity,transform:'scale('+scale+')'}}>{item.text}</div>
+      textShadow:'3px 3px 0 rgba(0,0,0,0.65)',opacity,transform:'scale('+scale+')'}}>{item.text}</div>}
   </AbsoluteFill>;
 };
 // Compare actual Cyrillic pixels against an intentionally missing family.
@@ -43,6 +43,7 @@ const verifyRenderedFont=(family,style,weight)=>{
 const Movie=({videos,captions,audio,font,fontFamily='StudioCaptionExact',fontStyle='normal',fontWeight=600})=>{
   const [handle]=useState(()=>delayRender('Loading exact local caption font'));
   useEffect(()=>{
+    if(captions.length&&captions.every(c=>c.image)){continueRender(handle);return;}
     const face=new FontFace(fontFamily,'url("'+staticFile(font)+'")',{weight:String(fontWeight),style:fontStyle});
     const load=async()=>{
       await face.load();

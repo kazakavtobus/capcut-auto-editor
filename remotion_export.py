@@ -317,6 +317,36 @@ def prepare_runtime():
         marker.write_bytes(package)
     return node
 
+def raster_caption(caption,font,target):
+    """Render the actual local face with FreeType; browser fonts cannot affect PNG."""
+    from PIL import Image, ImageDraw, ImageFont
+    size=max(1,round(float(caption['fontSize'])))
+    face=ImageFont.truetype(str(font),size)
+    max_width=round(1080*.82)
+    lines=[]
+    for paragraph in caption['text'].split('\n'):
+        line=''
+        for word in paragraph.split(' '):
+            candidate=(line+' '+word).strip()
+            if line and face.getlength(candidate)>max_width:
+                lines.append(line);line=word
+            else:line=candidate
+            while face.getlength(line)>max_width and len(line)>1:
+                cut=1
+                while cut<len(line) and face.getlength(line[:cut+1])<=max_width:cut+=1
+                lines.append(line[:cut]);line=line[cut:]
+        lines.append(line)
+    text='\n'.join(lines)
+    spacing=max(0,round(size*.12))
+    scratch=Image.new('RGBA',(1,1));draw=ImageDraw.Draw(scratch)
+    bbox=draw.multiline_textbbox((0,0),text,font=face,spacing=spacing,align='center')
+    w=max(1,bbox[2]-bbox[0])+10;h=max(1,bbox[3]-bbox[1])+10
+    image=Image.new('RGBA',(w,h));draw=ImageDraw.Draw(image)
+    pos=(5-bbox[0],5-bbox[1])
+    draw.multiline_text((pos[0]+3,pos[1]+3),text,font=face,fill=(0,0,0,166),spacing=spacing,align='center')
+    draw.multiline_text(pos,text,font=face,fill=caption['color'],spacing=spacing,align='center')
+    image.save(target);return w,h
+
 def stage_assets(plan,work,settings,progress=lambda _:None):
     public=work/'public';public.mkdir()
     progress('Remotion: проверяю шрифт и LUT')
@@ -329,6 +359,9 @@ def stage_assets(plan,work,settings,progress=lambda _:None):
     message=f"Шрифт аккаунта {plan['account']}: {audit['family']} · {audit['full_name']} · 600 {plan['fontStyle']} · SHA256 {audit['sha256'][:16]}"
     logging.getLogger('capcut_auto_editor').info('%s · источник %s',message,audit['source'])
     progress(message)
+    for i,caption in enumerate(plan['captions']):
+        filename=f'text-{i:04d}.png';w,h=raster_caption(caption,staged,public/filename)
+        caption.update(image=filename,imageWidth=w,imageHeight=h)
     lut_digest='none'
     if any(v['lut'] for v in plan['videos']):
         shutil.copy2(find_lut(settings),work/'lut.cube')
@@ -401,5 +434,5 @@ def render_batch_background(projects,settings,progress=None):
     except Exception as exc:return {'rows':[],'error':str(exc),'remaining':list(map(str,projects))}
     def exporter(project,config):
         def start(p,folder):render_to_folder(p,folder,config,node,progress or (lambda _:None))
-        return export_one(project,config,start=start,engine='remotion-font-v3')
+        return export_one(project,config,start=start,engine='remotion-factory-raster-v1')
     return export_batch(projects,settings,progress,exporter=exporter,close=lambda *a,**kw:None)

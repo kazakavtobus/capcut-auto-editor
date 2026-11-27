@@ -191,7 +191,7 @@ def export_one(project,settings,start=native_command,wait=wait_export,engine='ca
     info['draft_sha256']=hashlib.sha256((Path(project)/'draft_content.json').read_bytes()).hexdigest()
     digest=file_digest(p)
     p=publish_export(p,root,settings,info['account'],info['song'])
-    row=dict(info,path=str(p.resolve()),export_sha256=digest,engine=engine)
+    row=dict(info,path=str(p.resolve()),export_sha256=digest,engine=engine,exported_at=time.time())
     dst=Path(project)/'AutoAssets'/'export.json';tmp=dst.with_suffix('.tmp')
     tmp.write_text(json.dumps(row,ensure_ascii=False,indent=2),encoding='utf-8');tmp.replace(dst)
     try:folder.rmdir()
@@ -204,7 +204,7 @@ def export_batch(projects,settings,progress=None,exporter=export_one,close=nativ
         if progress:progress(f'Экспорт {i}/{len(projects)}: {Path(project).name}')
         try:rows.append(exporter(project,settings))
         except Exception as exc:
-            report_exception(exc,'Автоэкспорт CapCut · '+str(project))
+            report_exception(exc,'Ошибка экспорта · '+str(project))
             return {'rows':rows,'error':str(exc),'remaining':list(map(str,projects[i-1:]))}
         if i<len(projects):
             try:close(project,mode='close')

@@ -381,7 +381,7 @@ def settings_file() -> Path:
 def load_settings() -> dict:
     default={'provider':'local','api_key':'','theme':'light','media_root':'','auto_export':False,'export_root':'','export_engine':'remotion','remotion_lut':'',
              'account_1_name':'Unison Muz','account_2_name':'Аккаунт 2',
-             'projects_folder':str(Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) /
+             'factory_projects_folder':'','projects_folder':str(Path(os.environ.get('LOCALAPPDATA',str(Path.home()))) /
                       'CapCut'/'User Data'/'Projects'/'com.lveditor.draft'),
              'whisper_model':'medium','separate_vocals':False}
     p=settings_file()

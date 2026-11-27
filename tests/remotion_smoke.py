@@ -8,6 +8,8 @@ def run(*args):
     subprocess.run(list(map(str,args)),check=True)
 font=Path(os.environ['WINDIR'])/'Fonts'/'timesbi.ttf'
 shutil.copy2(font,public/'caption.ttf')
+from PIL import Image,ImageDraw,ImageFont
+img=Image.new('RGBA',(800,130));ImageDraw.Draw(img).text((20,20),'Тест Remotion',font=ImageFont.truetype(str(font),69),fill='white');img.save(public/'caption.png')
 run('ffmpeg','-hide_banner','-loglevel','error','-y','-f','lavfi','-i','testsrc2=size=360x640:rate=30:duration=1',
     '-an','-c:v','libx264','-pix_fmt','yuv420p',public/'clip.mp4')
 run('ffmpeg','-hide_banner','-loglevel','error','-y','-f','lavfi','-i','sine=frequency=440:duration=1',
@@ -15,7 +17,7 @@ run('ffmpeg','-hide_banner','-loglevel','error','-y','-f','lavfi','-i','sine=fre
 plan=dict(durationFrames=30,font='caption.ttf',fontFamily='StudioCaptionExactSmoke',fontStyle='italic',fontWeight=700,
     videos=[dict(file='clip.mp4',start=0,frames=15,sourceFrame=0,transition=6),
             dict(file='clip.mp4',start=15,frames=15,sourceFrame=15,transition=0)],
-    captions=[dict(start=0,frames=30,text='Тест Remotion',fontSize=69,color='#ffffff',x=0,y=0,enter=5,exit=6)],
+    captions=[dict(start=0,frames=30,text='Тест Remotion',image='caption.png',imageWidth=800,imageHeight=130,fontSize=69,color='#ffffff',x=0,y=0,enter=5,exit=6)],
     audio=dict(file='audio.wav',start=0,frames=30,sourceFrame=0,volume=1))
 manifest=work/'manifest.json';manifest.write_text(json.dumps(plan,ensure_ascii=False),encoding='utf-8')
 output=work/'output.mp4'

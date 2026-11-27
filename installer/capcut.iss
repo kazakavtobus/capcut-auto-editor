@@ -1,10 +1,10 @@
-#define AppName "CapCut Auto Editor 9.0 Preview"
-#define AppVersion "9.0.4"
+#define AppName "TikTok Factory"
+#define AppVersion "10.0.0"
 [Setup]
 AppId={{7512998B-7421-432D-A898-9C42E6FC38D3}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=CapCut Auto Editor Community
+AppPublisher=TikTok Factory
 DefaultDirName={localappdata}\Programs\CapCutAutoEditor9Preview
 DefaultGroupName={#AppName}
 OutputDir=..\dist\release

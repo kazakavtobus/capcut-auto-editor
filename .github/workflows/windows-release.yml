@@ -130,6 +130,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'LUT and updater validation failed' }
           python -m unittest discover -s tests -p test_preview_fonts.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Exact font validation failed' }
+      - name: Test autonomous Factory pipeline
+        if: github.ref == 'refs/heads/studio-v9-remotion'
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p test_factory.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Factory pipeline tests failed' }
       - name: Smoke test project cards
         if: github.ref == 'refs/heads/studio-v9-remotion'
         shell: pwsh
@@ -172,6 +178,7 @@ jobs:
       - name: Build PyInstaller app (no private templates or personal files)
         shell: pwsh
         run: |
+          if ($env:GITHUB_REF -eq 'refs/heads/studio-v9-remotion') { Remove-Item assets/capcut_export.ps1,assets/capcut_visual_export.ps1 -ErrorAction SilentlyContinue }
           python -m PyInstaller --noconfirm --clean --onedir --windowed `
             --name CapCutAutoEditor `
             --icon assets/app_icon.ico `
