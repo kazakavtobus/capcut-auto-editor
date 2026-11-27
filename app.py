@@ -34,7 +34,7 @@ from desktop_ui import MediaPage, SongsPage, Ring, ProjectCount, icon, apply_app
 from composition_preview import CompositionPreview
 from account_names import account_name,validate_account_name
 from native_export import export_batch,receipt as export_receipt,verify_mp4,file_digest,export_root,activate_capcut_from_studio
-from remotion_export import render_batch_background
+from remotion_export import render_batch_background, import_lut, lut_label
 from export_names import manual_metadata
 from telegram_delivery import load_config as load_telegram,save_config as save_telegram,discover as discover_telegram,send_export,caption as telegram_caption,chat_ids,validate_token
 from subtitle_editor import _project_data, apply_changes
@@ -1103,6 +1103,15 @@ class MainWindow(QMainWindow):
         self.export_engine.setCurrentIndex(1 if SETTINGS.get('export_engine')=='capcut' else 0)
         self.export_engine.currentIndexChanged.connect(self.save_export_engine)
         engine_row.addWidget(self.export_engine,1);engine_row.addWidget(btn('Выбрать LUT','secondary',self.pick_remotion_lut));l.addLayout(engine_row)
+        # Migrate the old absolute source path to durable app storage when possible.
+        if SETTINGS.get('remotion_lut'):
+            try:
+                source=Path(SETTINGS['remotion_lut'])
+                from remotion_export import LUT_DIR
+                if source.parent!=LUT_DIR:
+                    SETTINGS['remotion_lut']=str(import_lut(source));save_settings(SETTINGS)
+            except Exception as exc:report_exception(exc,'Перенос LUT в локальное хранилище')
+        self.lut_status=label(lut_label(SETTINGS),'muted',True);l.addWidget(self.lut_status)
         l.addWidget(label('Только для проверенных песен. После экспорта отправка требует подтверждения.','muted',True))
         control=horizontal(space=10);self.build_btn=btn('Создать проект CapCut','primary',self.start);self.build_btn.setMinimumHeight(50);control.addWidget(self.build_btn,1)
         self.project_btn=btn('Последний проект','secondary',self.open_project_folder);self.project_btn.setEnabled(False);control.addWidget(self.project_btn);l.addLayout(control)
@@ -1124,7 +1133,12 @@ class MainWindow(QMainWindow):
     def pick_remotion_lut(self):
         if self.busy():return
         path,_=QFileDialog.getOpenFileName(self,'Локальный LUT Clayton 33',SETTINGS.get('remotion_lut',''),'LUT (*.cube *.CUBE)')
-        if path:SETTINGS['remotion_lut']=path;save_settings(SETTINGS);self.note('LUT сохранён: '+Path(path).name)
+        if not path:return
+        try:
+            saved=import_lut(path);SETTINGS['remotion_lut']=str(saved);save_settings(SETTINGS)
+            self.lut_status.setText(lut_label(SETTINGS));self.note('LUT сохранён локально: '+Path(path).name)
+        except Exception as exc:
+            report_exception(exc,'Импорт LUT');QMessageBox.warning(self,'Не удалось импортировать LUT',str(exc))
 
     def begin_export(self,projects):
         if self.busy() or not projects:return
@@ -1506,8 +1520,6 @@ class MainWindow(QMainWindow):
         l.addWidget(c);l.addStretch()
 
     def check_updates(self):
-        QMessageBox.information(self,'Studio 9.0 Preview','Тестовые сборки устанавливаются отдельно через GitHub Actions. Автообновление стабильного канала отключено в этой версии.')
-        return
         if self.update_worker is not None and self.update_worker.isRunning():return
         self.updates_btn.setEnabled(False)
         self.updates_btn.setText('Проверяю GitHub…')

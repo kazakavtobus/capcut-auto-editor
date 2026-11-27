@@ -125,6 +125,8 @@ jobs:
           python -m unittest discover -s tests -p test_project_path_preview.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Project path validation failed' }
           python -m unittest discover -s tests -p test_preview_songs.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Song storage tests failed' }
+          python -m unittest discover -s tests -p test_preview_lut_updater.py -v
           if ($LASTEXITCODE -ne 0) { throw 'Project path validation failed' }
       - name: Smoke test manual song library UI
         shell: pwsh
@@ -231,18 +233,18 @@ jobs:
             dist/release/CapCutAutoEditor_Setup.exe
             dist/release/CapCutAutoEditor_Setup.exe.sha256
       - name: Publish verified GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/studio-v9-remotion'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ($env:GITHUB_REF -eq 'refs/heads/main') {
-            $head = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha'
+          if ($env:GITHUB_REF -eq 'refs/heads/studio-v9-remotion') {
+            $head = gh api "repos/$env:GITHUB_REPOSITORY/git/ref/heads/studio-v9-remotion" --jq '.object.sha'
             if ($LASTEXITCODE -ne 0) { throw 'Cannot check main branch' }
             if ($head -ne $env:GITHUB_SHA) { Write-Host 'Superseded build; not publishing'; exit 0 }
           }
           $version = python -c "from version import VERSION; print(VERSION)"
-          $tag = "v$version"
+          $tag = "preview-v$version"
           $installer = 'dist/release/CapCutAutoEditor_Setup.exe'
           $checksum = "$installer.sha256"
           $localHash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -251,7 +253,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot list releases' }
           $release = $all | Where-Object { $_.tag_name -eq $tag } | Select-Object -First 1
           if (!$release) {
-            $release = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases" -f tag_name=$tag -f target_commitish="$env:GITHUB_SHA" -f name="CapCut Auto Editor $tag" -F draft=true -F generate_release_notes=true | ConvertFrom-Json
+            $release = gh api --method POST "repos/$env:GITHUB_REPOSITORY/releases" -f tag_name=$tag -f target_commitish="$env:GITHUB_SHA" -f name="CapCut Auto Editor $tag" -F draft=true -F prerelease=true -F generate_release_notes=true | ConvertFrom-Json
             if ($LASTEXITCODE -ne 0 -or !$release.id) { throw 'Cannot create release draft' }
           }
           $id=$release.id
@@ -274,11 +276,11 @@ jobs:
             $sum=@($release.assets | Where-Object { $_.name -eq 'CapCutAutoEditor_Setup.exe.sha256' -and $_.state -eq 'uploaded' })
             $sumHash=(Get-FileHash $checksum -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($exe.Count -ne 1 -or $sum.Count -ne 1 -or $exe[0].digest -ne "sha256:$localHash" -or $sum[0].digest -ne "sha256:$sumHash") { throw 'Release digest mismatch' }
-            gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$id" -F draft=false --silent
+            gh api --method PATCH "repos/$env:GITHUB_REPOSITORY/releases/$id" -F draft=false -F prerelease=true --silent
             if ($LASTEXITCODE -ne 0) { throw 'Cannot publish draft' }
           } else {
             $names=@($release.assets | Where-Object { $_.state -eq 'uploaded' } | ForEach-Object { $_.name })
             if ('CapCutAutoEditor_Setup.exe' -notin $names -or 'CapCutAutoEditor_Setup.exe.sha256' -notin $names) { throw 'Existing release incomplete' }
           }
           $published=gh api "repos/$env:GITHUB_REPOSITORY/releases/$id" | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or $published.draft -or $published.assets.Count -lt 2) { throw 'Release publication not verified' }
+          if ($LASTEXITCODE -ne 0 -or $published.draft -or !$published.prerelease -or $published.assets.Count -lt 2) { throw 'Release publication not verified' }

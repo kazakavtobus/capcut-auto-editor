@@ -1,4 +1,5 @@
 const fs=require('node:fs');
+const os=require('node:os');
 const path=require('node:path');
 const {spawnSync}=require('node:child_process');
 const {bundle}=require('@remotion/bundler');
@@ -21,7 +22,8 @@ function canUseNvenc(ffmpeg,mode){
     console.log('STAGE: Запуск Chromium и загрузка композиции');
     const composition=await selectComposition({serveUrl,id:'StudioMovie',inputProps,browserExecutable});
     const options={composition,serveUrl,inputProps,browserExecutable,codec:'h264',audioCodec:'aac',outputLocation:path.resolve(output),
-      concurrency:2,videoBitrate:'10M',audioBitrate:'192k',pixelFormat:'yuv420p'};
+      concurrency:mode==='cpu'?2:Math.max(2,Math.min(4,Math.floor(os.availableParallelism()/3))),videoBitrate:'10M',audioBitrate:'192k',pixelFormat:'yuv420p'};
+    console.log('STAGE: Потоков рендера: '+options.concurrency);
     async function render(useGpu){
       let last=-1;
       process.stdout.write('ENCODER: '+(useGpu?'NVENC requested':'CPU')+'\n');

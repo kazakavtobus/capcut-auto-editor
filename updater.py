@@ -10,9 +10,10 @@ import os
 import re
 import subprocess
 import tempfile
+import sys
 from pathlib import Path
 from urllib.request import Request, urlopen
-from version import VERSION, REPOSITORY
+from version import VERSION, REPOSITORY, CHANNEL
 
 API='https://api.github.com/repos/'+REPOSITORY+'/releases/latest'
 INSTALLER_NAME='CapCutAutoEditor_Setup.exe'
@@ -43,10 +44,16 @@ def _version(s:str):
 
 
 def check_release():
-    try:doc=json.loads(_download(API,2_000_000).decode('utf-8'))
+    try:
+        if CHANNEL=='preview':
+            releases=json.loads(_download('https://api.github.com/repos/'+REPOSITORY+'/releases?per_page=100',8_000_000).decode('utf-8'))
+            previews=[d for d in releases if d.get('prerelease') and not d.get('draft') and re.fullmatch(r'preview-v\d+\.\d+\.\d+',d.get('tag_name',''))]
+            if not previews:return None
+            doc=max(previews,key=lambda d:_version(d['tag_name'].removeprefix('preview-')))
+        else:doc=json.loads(_download(API,2_000_000).decode('utf-8'))
     except Exception as exc:raise UpdateError('Не получилось проверить GitHub Releases: '+str(exc)) from exc
     tag=doc.get('tag_name','')
-    if _version(tag)<=_version(VERSION):return None
+    if _version(tag.removeprefix('preview-'))<=_version(VERSION):return None
     assets={a['name']:a for a in doc.get('assets',[]) if 'name' in a}
     if INSTALLER_NAME not in assets or CHECKSUM_NAME not in assets:
         raise UpdateError('Новая версия найдена, но установщик или контрольная сумма отсутствует')
@@ -92,5 +99,6 @@ def launch_installer(path:Path):
     if os.name!='nt':raise UpdateError('Автоустановка доступна только на Windows')
     if not path.is_file():raise UpdateError('Установщик не найден')
     # Runs per-user (not administrator) and recreates the Start Menu shortcut.
-    subprocess.Popen([str(path),'/SILENT','/SUPPRESSMSGBOXES','/NORESTART',
-                      '/CLOSEAPPLICATIONS','/RESTARTAPPLICATIONS'],cwd=str(path.parent))
+    args=[str(path),'/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS','/RESTARTAPPLICATIONS']
+    if CHANNEL=='preview' and getattr(sys,'frozen',False):args.append('/DIR='+str(Path(sys.executable).resolve().parent))
+    subprocess.Popen(args,cwd=str(path.parent))

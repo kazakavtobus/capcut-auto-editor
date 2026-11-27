@@ -1,5 +1,5 @@
 """Experimental local Remotion backend. Never drives CapCut or sends Telegram."""
-import json, os, shutil, subprocess, sys, tempfile, queue, threading, time, logging
+import json, os, shutil, subprocess, sys, tempfile, queue, threading, time, logging, hashlib, math
 from collections import deque
 from pathlib import Path
 from song_library import APPDATA
@@ -79,12 +79,54 @@ def timeline(project):
     if start!=0 or frames!=duration:raise ExportError('Remotion: музыка должна покрывать весь проект.')
     return dict(durationFrames=duration,videos=videos,captions=captions,audio=audio,fontName=font)
 
+LUT_DIR=APPDATA/'remotion'/'luts'
+CACHE_DIR=APPDATA/'remotion'/'clip-cache'
+
+def import_lut(source):
+    source=Path(source)
+    if source.suffix.lower()!='.cube' or source.stat().st_size>25_000_000:
+        raise ExportError('Нужен корректный файл .CUBE размером до 25 МБ.')
+    data=source.read_bytes()
+    size=None;count=0
+    for line in data.decode('utf-8-sig').splitlines():
+        line=line.split('#',1)[0].strip()
+        if not line:continue
+        parts=line.split()
+        if parts[0]=='LUT_3D_SIZE':
+            if len(parts)!=2 or size is not None:raise ExportError('Некорректный заголовок LUT.')
+            size=int(parts[1])
+            if not 2<=size<=128:raise ExportError('Неподдерживаемый размер 3D LUT.')
+        elif parts[0] in ('TITLE','DOMAIN_MIN','DOMAIN_MAX'):continue
+        else:
+            if len(parts)!=3 or not all(math.isfinite(float(x)) for x in parts):
+                raise ExportError('Некорректные данные 3D LUT.')
+            count+=1
+    if size is None or count!=size**3:raise ExportError('Неполный или некорректный 3D LUT.')
+    LUT_DIR.mkdir(parents=True,exist_ok=True)
+    digest=hashlib.sha256(data).hexdigest()
+    target=LUT_DIR/(digest[:16]+'_'+source.name)
+    if not target.is_file():
+        with tempfile.NamedTemporaryFile(dir=LUT_DIR,delete=False) as f:
+            tmp=Path(f.name);f.write(data)
+        try:os.replace(tmp,target)
+        finally:tmp.unlink(missing_ok=True)
+    return target
+
+def lut_label(settings):
+    try:
+        p=find_lut(settings)
+        name=p.name.split('_',1)[-1] if p.parent==LUT_DIR else p.name
+        return '✓ LUT подключён: '+name
+    except (OSError,ValueError,ExportError):return 'LUT не подключён · выбери .CUBE'
+
 def find_lut(settings):
     candidates=[Path(settings['remotion_lut'])] if settings.get('remotion_lut') else []
     candidates.extend([APPDATA/'remotion'/LUT_NAME,
         Path(os.environ.get('LOCALAPPDATA',str(Path.home())))/'CapCut'/'User Data'/'Resources'/'Lut'/'Clayton 33'/LUT_NAME])
     for p in candidates:
-        if p.is_file():return p
+        try:
+            if p.is_file():return p
+        except OSError:continue
     raise ExportError('Помести Clayton 33.CUBE в '+str(APPDATA/'remotion')+' или укажи путь remotion_lut в настройках.')
 
 def find_font(name):
@@ -185,7 +227,11 @@ def stage_assets(plan,work,settings,progress=lambda _:None):
     progress('Remotion: проверяю шрифт и LUT')
     font=find_font(plan.pop('fontName'))
     font_name='caption'+font.suffix.lower();shutil.copy2(font,public/font_name);plan['font']=font_name
-    if any(v['lut'] for v in plan['videos']):shutil.copy2(find_lut(settings),work/'lut.cube')
+    lut_digest='none'
+    if any(v['lut'] for v in plan['videos']):
+        shutil.copy2(find_lut(settings),work/'lut.cube')
+        lut_digest=hashlib.sha256((work/'lut.cube').read_bytes()).hexdigest()
+    CACHE_DIR.mkdir(parents=True,exist_ok=True)
     seen={}
     total=len({(v['path'],v['brightness'],v['contrast'],v['lut']) for v in plan['videos']})
     for v in plan['videos']:
@@ -197,10 +243,32 @@ def stage_assets(plan,work,settings,progress=lambda _:None):
             filters='scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30'
             if lut:filters+=',lut3d=file=lut.cube'
             filters+=f',eq=brightness={bright}:contrast={1+contrast},format=yuv420p'
-            run_command([ffmpeg_exe(),'-hide_banner','-loglevel','error','-nostdin','-y','-i',source,'-map','0:v:0','-an',
-              '-vf',filters,'-c:v','libx264','-preset','veryfast','-crf','18',public/name],work)
+            from native_export import file_digest
+            cache_key=hashlib.sha256(json.dumps(['v1',file_digest(Path(source)),filters,lut_digest if lut else 'none','libx264','veryfast','18']).encode()).hexdigest()
+            cached=CACHE_DIR/(cache_key+'.mp4')
+            if cached.is_file() and cached.stat().st_size>0:
+                try:
+                    shutil.copy2(cached,public/name);os.utime(cached,None)
+                    progress(f'Remotion: футаж {len(seen)+1}/{total} из кэша')
+                except OSError:
+                    (public/name).unlink(missing_ok=True)
+            if not (public/name).is_file():
+                run_command([ffmpeg_exe(),'-hide_banner','-loglevel','error','-nostdin','-y','-i',source,'-map','0:v:0','-an',
+                  '-vf',filters,'-c:v','libx264','-preset','veryfast','-crf','18',public/name],work)
+                try:
+                    with tempfile.NamedTemporaryFile(dir=CACHE_DIR,delete=False) as f:temp=Path(f.name)
+                    try:shutil.copy2(public/name,temp);os.replace(temp,cached)
+                    finally:temp.unlink(missing_ok=True)
+                except OSError:pass
             seen[key]=name
         v['file']=seen[key]
+    try:
+        files=sorted(CACHE_DIR.glob('*.mp4'),key=lambda x:x.stat().st_mtime,reverse=True)
+        size=0
+        for cached in files:
+            size+=cached.stat().st_size
+            if size>3_000_000_000:cached.unlink(missing_ok=True)
+    except OSError:pass
     audio=plan['audio'];source=Path(audio.pop('path'));name='audio'+source.suffix.lower()
     shutil.copy2(source,public/name);audio['file']=name
     manifest=work/'manifest.json';manifest.write_text(json.dumps(plan,ensure_ascii=False),encoding='utf-8')
